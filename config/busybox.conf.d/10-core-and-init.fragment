@@ -1,0 +1,6 @@
+##### BusyBox: core/init policy
+# Minimalist userspace (no full init/getty/mdev here; handled elsewhere).
+# (Left intentionally blank except for explicit IDs carried over)
+CONFIG_FIRST_SYSTEM_ID=0
+CONFIG_LAST_ID=0
+CONFIG_LAST_SYSTEM_ID=0

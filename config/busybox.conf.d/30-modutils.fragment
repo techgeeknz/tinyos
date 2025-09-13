@@ -1,0 +1,11 @@
+##### BusyBox: kernel module utilities
+# Accept tainted modules (for diagnostics).
+CONFIG_FEATURE_CHECK_TAINTED_MODULE=y
+
+# Helpful output formatting.
+CONFIG_FEATURE_LSMOD_PRETTY_2_6_OUTPUT=y
+
+# modprobe quality-of-life
+CONFIG_FEATURE_MODPROBE_BLACKLIST=y
+CONFIG_FEATURE_MODUTILS_ALIAS=y
+CONFIG_FEATURE_MODUTILS_SYMBOLS=y

@@ -1,0 +1,12 @@
+This directory contains BusyBox configuration fragments for prepare-busybox.sh.
+
+Usage:
+- Place one or more *.fragment or *.frag files here.
+- Files are applied in lexicographic order; later ones override earlier ones.
+  (Use numeric prefixes like 10-core.fragment, 20-utils.fragment to control order.)
+- Each file should contain valid BusyBox .config lines, e.g.:
+    CONFIG_STATIC=y
+    CONFIG_FEATURE_INSTALLER=y
+    # CONFIG_SELINUX is not set
+
+Tip: split features into logical groups and apply only what you need for TinyOS.

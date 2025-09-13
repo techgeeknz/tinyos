@@ -1,0 +1,3 @@
+# sysfs.d on HP_TOOLS
+# Use this to override or extend sysfs settings post-mount.
+# Same "path = value" format. Processed after initramfs sysfs.d.

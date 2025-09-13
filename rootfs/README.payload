@@ -1,0 +1,39 @@
+# TinyOS Payload (EFI App + Runtime Assets)
+
+## What This Is
+This directory contains the TinyOS EFI application and the external runtime
+assets complementing the embedded initramfs.
+
+## Layout
+- `tinyos.efi`              — EFI‑stub kernel + initramfs
+- `lib/modules/<KVER>/...`  — staged modules matching kernel
+- `lib/firmware/...`        — firmware referenced by modules
+- `sysfs.d/`                — sysfs policy applied by init
+- `README`                  — this file
+- `.tinyos.manifest`        — list of deployed files
+- `.backup`                 — backup of replaced EFI files
+
+## How It's Used
+- At boot, `/init` bind‑mounts:
+  * `lib/modules/<KVER>` → `/lib/modules/<KVER>`
+  * `lib/firmware` → `/lib/firmware`
+- Module indexes (`modules.dep*`) generated at stage time.
+- Initramfs only carries BusyBox + early boot modules.
+
+## Sysfs Policy
+Files in `sysfs.d/*.conf` contain `key = value` settings. They are applied
+early in boot to tune kernel attributes.
+
+## Example `refind.conf` Stanza
+```
+menuentry "TinyOS" {
+  volume HP_TOOLS
+  loader /EFI/tinyos/tinyos.efi
+  options "console=tty0 acpi_backlight=native"
+  graphics on
+}
+```
+
+## Firmware Source
+- Local `linux-firmware` repo (if available during build).
+- Host `/lib/firmware` fallback.

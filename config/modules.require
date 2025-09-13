@@ -1,0 +1,3 @@
+# Modules that must exist on HP_TOOLS (non-exhaustive; used for sanity)
+# Example:
+# kernel/drivers/net/e1000e/e1000e.ko

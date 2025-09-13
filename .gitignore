@@ -1,0 +1,15 @@
+busybox
+linux
+linux-headers
+linux-firmware
+staging
+*.iso
+*.img
+*.cpio
+*.cpio.gz
+*.cpio.zst
+*.tar
+*.tar.gz
+*.tar.zst
+*.zip
+

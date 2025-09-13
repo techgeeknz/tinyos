@@ -1,0 +1,48 @@
+# TinyOS Initramfs (Embedded)
+
+## Purpose
+This is the embedded root used at boot by TinyOS EFI image. It provides a
+minimal BusyBox userland plus `/init` to bring up kernel pseudo‑filesystems,
+apply early sysfs policy, and (when available) bind‑mount the deployed payload’s
+modules and firmware.
+
+## What’s Included
+- `/init` — primary init (PID 1)
+- `bin/busybox`, `bin/sh` — BusyBox and shell
+- `etc/inittab` — BusyBox init config
+- `etc/init.d/rcS` — mounts `/proc`, `/sys`, `/dev`
+- `etc/sysfs.d/*.conf` — optional sysfs tweaks (`key = value`)
+- `lib/modules/<KVER>/` — early boot modules only
+- `lib/firmware/` — early boot firmware only
+- `README` — this file
+
+## What’s Not Included
+- Full drivers — live in external payload.
+- Full firmware — copied from payload after bind‑mount.
+- Persistence — everything here is in RAM. `/etc/tinyos.conf` may be present
+  but is non‑persistent.
+
+## Boot Flow
+1. Kernel unpacks initramfs, executes `/init`.
+2. `/init` mounts `/proc`, `/sys`, `/dev`.
+3. If payload is found, bind‑mounts:
+   * HP_TOOLS/EFI/tinyos/lib/modules/<KVER> → /lib/modules/<KVER>
+   * HP_TOOLS/EFI/tinyos/lib/firmware → /lib/firmware
+4. Apply sysfs policy from `sysfs.d/*.conf`.
+5. Handoff to BusyBox init.
+
+## Runtime Notes
+- Kernel cmdline may override firmware search via `firmware_class.path=`.
+- If payload bind‑mounts fail, a rescue BusyBox shell is still available.
+
+## Recovery Tips
+- Inspect module deps: `modprobe -D <name>`.
+- Check mounts: `mount | grep -E '/lib/(modules|firmware)'`.
+- Verify HP_TOOLS VFAT layout.
+
+## Provenance
+- `stage-assets.sh` — installed README, scaffolding.
+- `stage-modules.sh` — chose early‑boot modules.
+- `pack-initramfs.sh` — packed image.
+
+See top‑level README for config knobs.

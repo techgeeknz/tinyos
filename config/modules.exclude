@@ -1,0 +1,3 @@
+# Modules to exclude from HP_TOOLS (conflicts cause failure)
+# Example:
+# kernel/drivers/gpu/drm/nouveau/nouveau.ko

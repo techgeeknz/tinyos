@@ -1,0 +1,21 @@
+##### BusyBox: networking policy
+# Keep networking *client* footprint minimal in initramfs.
+# Explicitly keep high-surface daemons OFF:
+# (HTTPD, TELNETD, FTPD/TFTPD, WGET client & TLS support)
+# CONFIG_HTTPD is not set
+# CONFIG_TELNETD is not set
+# CONFIG_FTPD is not set
+# CONFIG_TFTPD is not set
+# CONFIG_WGET is not set
+# CONFIG_FEATURE_WGET_HTTPS is not set
+# CONFIG_FEATURE_WGET_OPENSSL is not set
+
+# Avoid shipping ping/traceroute/netcat et al. in early boot.
+# CONFIG_PING is not set
+# CONFIG_PING6 is not set
+# CONFIG_TRACEROUTE is not set
+# CONFIG_TRACEROUTE6 is not set
+# CONFIG_NC is not set
+
+# rfkill is useful early for wireless toggles:
+CONFIG_RFKILL=y

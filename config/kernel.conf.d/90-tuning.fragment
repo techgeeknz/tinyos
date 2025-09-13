@@ -1,0 +1,10 @@
+##### Kernel tuning & debugging policy
+CONFIG_HZ_250=y
+CONFIG_HZ=250
+CONFIG_NR_CPUS=16
+CONFIG_TRIM_UNUSED_KSYMS=y
+# CONFIG_HIBERNATION is not set
+# CONFIG_SOUND is not set
+# CONFIG_KPROBES is not set
+# CONFIG_FTRACE is not set
+# CONFIG_DEBUG_FS is not set

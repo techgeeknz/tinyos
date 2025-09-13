@@ -1,0 +1,13 @@
+This directory contains kernel configuration fragments for prepare-kernel.sh.
+
+Usage:
+- Place one or more *.fragment or *.frag files here.
+- Files are applied in lexicographic order; later ones override earlier ones.
+  (Use numeric prefixes like 10-core.fragment, 20-fs.fragment to control order.)
+- Each file should contain valid Kconfig lines, e.g.:
+    CONFIG_FOO=y
+    CONFIG_BAR=m
+    # CONFIG_BAZ is not set
+
+Tip: keep fragments small and thematic (e.g., fs.fragment, drm.fragment),
+so they’re easy to maintain and replace.

@@ -1,0 +1,47 @@
+##### BusyBox: safety disables
+# Shell: keep ash default; explicitly *not* enabling hush or fancy variants.
+# CONFIG_SHELL_HUSH is not set
+# CONFIG_HUSH is not set
+
+# Account management / login stack (not needed in tiny initramfs):
+# CONFIG_LOGIN is not set
+# CONFIG_PASSWD is not set
+# CONFIG_SU is not set
+# CONFIG_SULOGIN is not set
+# CONFIG_ADDUSER is not set
+# CONFIG_ADDGROUP is not set
+# CONFIG_DELUSER is not set
+# CONFIG_DELGROUP is not set
+
+# Block/network admin tooling we avoid in early boot:
+# CONFIG_FDISK is not set
+# CONFIG_FSCK is not set
+# CONFIG_IP is not set
+# CONFIG_IFCONFIG is not set
+# CONFIG_IPROUTE is not set
+# CONFIG_IPRULE is not set
+# CONFIG_IPADDR is not set
+# CONFIG_IPLINK is not set
+# CONFIG_IPTUNNEL is not set
+# CONFIG_IFUP is not set
+# CONFIG_IFDOWN is not set
+
+# Misc daemons/utilities not required here:
+# CONFIG_CROND is not set
+# CONFIG_INETD is not set
+# CONFIG_MDEV is not set
+
+# Package managers & archives we don't ship:
+# CONFIG_DPKG is not set
+# CONFIG_RPM is not set
+# CONFIG_RPM2CPIO is not set
+
+# Client tools often omitted in initramfs:
+# CONFIG_WGET is not set
+# CONFIG_TELNET is not set
+# CONFIG_FTPGET is not set
+# CONFIG_FTPPUT is not set
+# CONFIG_TFTP is not set
+
+# Keep SSL/TLS off (no crypto in initramfs):
+# CONFIG_TLS is not set

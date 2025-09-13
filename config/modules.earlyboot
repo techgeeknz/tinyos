@@ -1,0 +1,4 @@
+# Modules required in initramfs (closure is computed automatically)
+# Example:
+# kernel/drivers/ata/ahci.ko
+# kernel/drivers/scsi/sd_mod.ko

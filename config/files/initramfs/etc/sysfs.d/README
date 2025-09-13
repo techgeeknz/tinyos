@@ -1,0 +1,3 @@
+# sysfs.d in initramfs
+# Lines are "path = value"; paths relative to /sys unless absolute.
+# Applied very early, before HP_TOOLS/ESP mounts.

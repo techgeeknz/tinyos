@@ -1,0 +1,101 @@
+# TinyOS: Build & Payload Overview
+
+This project builds a minimal BusyBox + Linux environment for rescue/testing,
+wrapped as an EFI‑stub kernel with an embedded initramfs. External runtime
+assets (modules, firmware, sysfs policy) are staged and deployed to the
+**HP_TOOLS** partition so they are independent of the real ESP and safe from
+other OS installers.
+
+## Quick Start
+Clone, build, and install TinyOS with:
+```
+make firmware-init   # optional, host's `/lib/firmware` used as fallback
+make bootstrap       # clone kernel and busybox repos, build everything
+sudo make install    # install to HP_TOOLS/EFI/tinyos
+```
+
+## Build Tree (High Level)
+- `Makefile`              — Orchestrator (linux, busybox, staging, install)
+- `linux/`                — Kernel source (defconfig + fragments)
+- `busybox/`              — BusyBox source (defconfig + fragments)
+- `rootfs/`               — Initramfs contents (init + scaffolding)
+- `scripts/`              — Helper tooling
+- `config/`               — Policy & overlays
+  * `kernel.conf.d/`, `busybox.conf.d/` — config fragments
+  * `modules.earlyboot`   — modules targeted for initramfs
+  * `modules.require`     — modules that must not be excluded
+  * `modules.exclude`     — modules to exclude from final payload
+  * `files/` overlays     — optional `initramfs/`, `payload/`
+  * `tinyos.conf`         — install/runtime knobs → exposed to init and make
+- `staging/`              — Build product (initramfs, payload, `.meta` reports)
+
+## Runtime / Deployed Payload (HP_TOOLS/EFI/tinyos/)
+- `tinyos.efi`              — EFI‑stub kernel + embedded initramfs
+- `lib/modules/<KVER>/...`  — Staged modules matching the kernel
+- `lib/firmware/...`        — Firmware referenced by staged modules
+- `sysfs.d/`                — Sysfs policy applied by `init`
+- `README`                  — Payload README (deployed copy)
+- `.tinyos.manifest`        — List of deployed files
+- `.backup`                 — Backup of previously‑installed EFI files
+
+## Boot Flow (High Level)
+1. Kernel unpacks initramfs, executes `/init`.
+2. `/init` mounts `/proc`, `/sys`, `/dev`.
+3. If payload is found, bind‑mounts:
+   * `lib/modules/<KVER>` → `/lib/modules/<KVER>`
+   * `lib/firmware` → `/lib/firmware`
+4. Optional sysfs policy from `sysfs.d/*.conf` applied.
+5. Handoff to BusyBox `init`.
+
+## Config Knobs (`tinyos.conf`)
+The `config/tinyos.conf` file contains simple KEY=VALUE pairs. This file is
+used by both the `Makefile` and the deployed `init` to override parts of the
+build process or alter runtime behaviour.
+
+Examples of keys that can be set at build or runtime:
+- `ESP_MOUNT` / `TOOLS_MOUNT` — mount points for ESP and HP_TOOLS.
+- `ESP_HINT` / `TOOLS_HINT`   — partition identifiers (labels/UUIDs).
+- `TINYOS_REL`                — relative install path (default: `EFI/tinyos`).
+- `INSTALL_NAME`              — name of the kernel (default: `tinyos.efi`).
+- `COMP`                      — compressor for initramfs (gzip, xz, etc.).
+
+In addition to these, many other `Makefile` or `init` environment variables
+can be overridden this way.
+
+The initramfs version, `/etc/tinyos.conf`, is regenerated on install. It is
+non‑persistent and mainly informative.
+
+## Sysfs Policy (`sysfs.d/*.conf`)
+Each file has `key = value` pairs. Example:
+```
+device/attribute = 1
+```
+This lets you enforce quirks (e.g. disable USB autosuspend) early in boot.
+
+## Example `refind.conf` Stanza
+```
+menuentry "TinyOS" {
+  volume HP_TOOLS
+  loader /EFI/tinyos/tinyos.efi
+  options "console=tty0 acpi_backlight=native"
+  graphics on
+}
+```
+
+## Firmware Sources
+- Host system firmware `/lib/firmware` (fallback).
+- Local `./linux-firmware` repo (preferred, reproducible).
+  * `make firmware-init`  → prepare sparse (cone‑mode) repo (no fetch).
+  * `make firmware-pull`  → update current repo (sparse or full).
+  * `make firmware-full`  → full clone/update (non‑sparse).
+
+If blobs are still missing, they are listed in `firmware.*.missing`.
+
+## Provenance
+- `stage-modules.sh` — module selection + dep closure.
+- `collect-firmware.sh` — firmware discovery + copy/map reports.
+- `stage-assets.sh` — README, BusyBox/init scaffolding, overlays.
+
+## Safety Note
+Do not let other OS installers touch **HP_TOOLS**. TinyOS assets live there on
+purpose to stay stable across upgrades.

@@ -1,0 +1,7 @@
+##### BusyBox: udhcpc defaults (kept inert unless you enable udhcpc)
+# These mirror your original assignments; harmless if udhcpc remains disabled.
+CONFIG_UDHCPC_DEFAULT_INTERFACE=""
+CONFIG_UDHCPC_DEFAULT_SCRIPT=""
+CONFIG_UDHCPC6_DEFAULT_SCRIPT=""
+CONFIG_UDHCPC_SLACK_FOR_BUGGY_SERVERS=0
+CONFIG_UDHCP_DEBUG=0

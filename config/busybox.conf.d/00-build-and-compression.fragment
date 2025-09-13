@@ -1,0 +1,13 @@
+##### BusyBox: build & compression policy
+# Static linking for portability in initramfs.
+CONFIG_STATIC=y
+
+# Toolchain tuning (as provided).
+CONFIG_EXTRA_CFLAGS="-O2 -march=native -pipe"
+
+# Decompressors we rely on (match your monolithic fragment).
+CONFIG_LZOPCAT=y
+CONFIG_UNLZOP=y
+CONFIG_BZIP2_SMALL=0
+# Keep full bzip2 disabled to save space; '..._SMALL' still required by some tools.
+# CONFIG_BZIP2 is not set

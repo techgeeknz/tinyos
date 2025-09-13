@@ -1,0 +1,266 @@
+#!/bin/busybox sh
+# TinyOS early userspace (initramfs). BusyBox static, devtmpfs-only (no mdev).
+# Goal: fast boot to a recovery shell for EFI tweaks (e.g., rEFInd config), no in-init editor.
+# Handoff to BusyBox init by default.
+
+set -eu
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export LANG=C LC_ALL=C
+
+# BusyBox self-install (foreground, critical)
+# (We do this early so all applets are available.)
+/bin/busybox mkdir -p /bin /sbin
+/bin/busybox --install -s /
+
+# Defaults (can be overridden via /etc/tinyos.conf)
+TOOLS_MOUNT=/boot/hp_tools
+ESP_MOUNT=/boot/efi
+TINYOS_REL="EFI/tinyos"
+
+# Additional config knobs (optional):
+#   TOOLS_HINT, ESP_HINT   : one of LABEL=…, UUID=…, PARTUUID=…, PARTLABEL=…, or /dev/…
+TOOLS_HINT=""
+ESP_HINT=""
+
+# Optional config file: KEY=VALUE only (VALUE is stripped of leading/trailing
+# whitespace, but is otherwise literal).
+# Sanitize to a temp file that contains only `unset KEY` and `KEY='VALUE'`,
+# then source it.
+CFG=/etc/tinyos.conf
+if [ -f "$CFG" ]; then
+  # Fresh /run and fixed debug-friendly temp path
+  mkdir -p /run || true
+  mount -t tmpfs -o mode=0755,nosuid,nodev,noexec tmpfs /run 2>/dev/null || true
+  _tmp_conf="/run/tinyos.conf"
+  : >"$_tmp_conf" || true
+
+  # sed: strip CR, comments, trim, drop blanks, normalize spaces, keep only KEY=VALUE
+  /bin/busybox sed -rn \
+    -e 's/\r$//' \
+    -e '/^[[:space:]]*#/d' \
+    -e '/^[[:space:]]*$/d' \
+    -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
+    -e 's/[[:space:]]*=[[:space:]]*/=/' \
+    -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
+    "$CFG" |
+  /bin/busybox awk '{
+    # Split at first "="
+    i = index($0, "=");
+    k = substr($0, 1, i-1);
+    v = substr($0, i+1);
+    # Empty value → unset
+    if (v == "") { print "unset " k; next }
+    # Escape single quotes for shell (written via char codes)
+    rep = sprintf("%c\\%c%c", 39, 39, 39); gsub(/\047/, rep, v);
+    # Emit KEY=VALUE (single quoted) safely
+    printf "%s=%c%s%c\n", k, 39, v, 39;
+  }' >"$_tmp_conf"
+  # ensure trailing newline
+  printf '\n' >> "$_tmp_conf"
+  # Source sanitized overrides (only our generated lines)
+  . "$_tmp_conf"
+fi
+
+# Normalize config-derived paths:
+# - TOOLS_MOUNT: strip trailing /
+# - TINYOS_REL : strip leading and trailing / (keep 'EFI/...', do not make it absolute)
+# - ESP_MOUNT  : strip trailing /
+TOOLS_MOUNT="${TOOLS_MOUNT%/}"
+TINYOS_REL="${TINYOS_REL#/}"
+TINYOS_REL="${TINYOS_REL%/}"
+ESP_MOUNT="${ESP_MOUNT%/}"
+
+# Resolved paths used everywhere else
+# NOTE: keep EFI/ — do NOT strip it.
+TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
+
+log()   { echo "[initramfs] $*"; }
+panic() { echo "[initramfs] ERROR: $*" >&2; exec cttyhack sh; }
+
+# Pseudo-fs (idempotent)
+mountpoint -q /proc || mount -t proc     proc     /proc  2>/dev/null || true
+mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   2>/dev/null || true
+mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   2>/dev/null || true
+
+# Quiet the kernel a touch (best-effort)
+[ -w /proc/sys/kernel/printk ] && echo 3 4 1 3 > /proc/sys/kernel/printk 2>/dev/null || true
+
+# Base dirs (foreground, critical)
+mkdir -p /mnt /tmp "$ESP_MOUNT" "$TOOLS_MOUNT"
+chmod 1777 /tmp 2>/dev/null || true
+
+# Cmdline
+CMDLINE="$(cat /proc/cmdline 2>/dev/null || true)"
+
+# -------- sysfs helpers --------
+set_sysfs() { # set_sysfs <abs-or-rel-path-under-/sys> <value>
+  p="$1"; v="$2"
+  # 1) Normalize to an absolute path under /sys
+  case "$p" in
+    /sys/*) abs="$p" ;;
+    /*)     log "sysfs: reject absolute path outside /sys: '$p'"; return 1 ;;
+    *)      abs="/sys/${p#/}" ;;
+  esac
+  # 2) Cheap traversal guard even without canonicalization
+  case "$abs" in *"/.."*|*"../"*) log "sysfs: reject path with '..': '${abs#/sys/}'"; return 1 ;; esac
+  # 3) Canonicalize with BusyBox readlink (if it resolves, enforce /sys prefix)
+  rp="$(/bin/busybox readlink -f -- "$abs" 2>/dev/null || true)"
+  if [ -n "$rp" ]; then
+    case "$rp" in /sys/*) abs="$rp" ;; *) log "sysfs: canonical path escapes /sys: '$rp'"; return 1 ;; esac
+  fi
+  # 4) Write if writable
+  if [ -w "$abs" ]; then
+    printf '%s' "$v" >"$abs" 2>/dev/null && { log "sysfs: set ${abs#/sys/}='$v'"; return 0; }
+  fi
+  log "sysfs: cannot set ${abs#/sys/} (not writable?)"; return 1
+}
+apply_sysfs_dir() { # apply_sysfs_dir <dir> ; *.conf "path = value", comments/# ok
+  d="$1"; [ -d "$d" ] || return 0
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in \#*|'') continue;;
+        *=*) k="${line%%=*}"; v="${line#*=}";;
+        *) continue;;
+      esac
+      k="$(printf '%s' "$k" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+      v="$(printf '%s' "$v" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+      # Warn if an absolute path is not under /sys (it will be rejected by set_sysfs anyway)
+      case "$k" in /sys/*) : ;; /*) log "sysfs: warning: absolute path not under /sys: '$k'";; esac
+      [ -n "$k" ] && set_sysfs "$k" "$v" || true
+    done <"$f"
+  done
+}
+
+# --- Apply initramfs sysfs.d early (before any external mounts) ---
+apply_sysfs_dir "/etc/sysfs.d"
+
+# Resolve a device from a "hint" (LABEL=…, UUID=…, PARTUUID=…, PARTLABEL=…, or /dev/…)
+resolve_hint() { # $1: hint
+  h="$1"
+  case "$h" in
+    LABEL=*|UUID=*|PARTUUID=*|PARTLABEL=*) blkid -t "$h" -o device 2>/dev/null | head -n1 ;;
+    /dev/*) printf '%s\n' "$h" ;;
+    *)      printf '\n' ;;
+  esac
+}
+mount_fat_ro() {  # $1:dev $2:mountpoint
+  dev="$1"; mnt="$2"
+  mount -t vfat -o ro,nodev,nosuid,noexec "$dev" "$mnt" 2>/dev/null ||
+  mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null || return 1
+}
+
+# ---------- HP_TOOLS (toolbox partition) ----------
+TOOLS_DEV=""
+# Seed from config hint if provided
+if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
+  TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
+fi
+for tok in $CMDLINE; do
+  case "$tok" in
+    hp_tools=*) TOOLS_DEV="$(resolve_hint "${tok#hp_tools=}")" ;;
+  esac
+done
+
+# Try explicit device first (if given)
+if [ -n "${TOOLS_DEV:-}" ]; then
+  mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
+fi
+
+# Otherwise, prefer a VFAT device whose LABEL is exactly HP_TOOLS (enforced by firmware)
+if [ -z "${TOOLS_DEV:-}" ]; then
+  TOOLS_DEV="$(resolve_hint "LABEL=HP_TOOLS" || true)"
+  if [ -n "${TOOLS_DEV:-}" ]; then
+    mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
+  fi
+fi
+
+# As a final fallback, probe all VFAT devices and match LABEL value
+if [ -z "${TOOLS_DEV:-}" ]; then
+  for d in $(blkid -t TYPE=vfat -o device 2>/dev/null || true); do
+    lbl="$(blkid -s LABEL -o value "$d" 2>/dev/null || true)"
+    [ "${lbl:-}" = "HP_TOOLS" ] || continue
+    mount_fat_ro "$d" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; continue; }
+    TOOLS_DEV="$d"; break
+  done
+fi
+
+# Uniform logging regardless of discovery method
+if [ -n "${TOOLS_DEV:-}" ]; then
+  log "HP_TOOLS mounted on $TOOLS_DEV"
+else
+  log "HP_TOOLS not found (continuing with embedded assets only)"
+fi
+
+# ---------- ESP (real EFI System Partition) ----------
+ESP_DEV=""
+for tok in $CMDLINE; do
+  case "$tok" in
+    esp=*) ESP_DEV="$(resolve_hint "${tok#esp=}")" ;;
+  esac
+done
+# Never treat HP_TOOLS as ESP
+if [ -n "${TOOLS_DEV:-}" ] && [ -n "${ESP_DEV:-}" ] && [ "$ESP_DEV" = "$TOOLS_DEV" ]; then
+  ESP_DEV=""
+fi
+
+# Try explicit device first (if given)
+if [ -n "${ESP_DEV:-}" ]; then
+  if ! mount_fat_ro "$ESP_DEV" "$ESP_MOUNT" || [ ! -d "$ESP_MOUNT/EFI" ]; then
+    umount "$ESP_MOUNT" 2>/dev/null || true
+    ESP_DEV=""
+  fi
+fi
+
+# Otherwise, probe: first VFAT with /EFI, excluding HP_TOOLS
+if [ -z "${ESP_DEV:-}" ]; then
+  for d in $(blkid -t TYPE=vfat -o device 2>/dev/null || true); do
+    [ -n "${TOOLS_DEV:-}" ] && [ "$d" = "$TOOLS_DEV" ] && continue
+    mount_fat_ro "$d" "$ESP_MOUNT" || continue
+    if [ -d "$ESP_MOUNT/EFI" ]; then ESP_DEV="$d"; break; fi
+    umount "$ESP_MOUNT" 2>/dev/null || true
+  done
+fi
+
+# Uniform logging regardless of discovery method
+if [ -n "${ESP_DEV:-}" ]; then
+  log "ESP mounted on $ESP_DEV"
+else
+  log "ESP not found (continuing)"
+fi
+
+# ---------- Bind in external modules/firmware from HP_TOOLS ----------
+KVER="$(uname -r)"
+
+# Modules: bind only if directory appears to contain supplemental assets, ignore otherwise
+MOD_EXT="$TINYOS_DIR/lib/modules/$KVER"
+if [ -d "$MOD_EXT" ] && \
+   busybox find "$MOD_EXT" \
+     -type f \( -name '*.ko' -o -name '*.ko.*' -o -name 'modules.dep*' -o -name 'modules.*' \) \
+     -print 2>/dev/null | head -n1 >/dev/null; then
+  mkdir -p "/lib/modules/$KVER"
+  mountpoint -q "/lib/modules/$KVER" || mount --bind "$MOD_EXT" "/lib/modules/$KVER" 2>/dev/null || true
+fi
+
+# Firmware: bind (and set runtime search path) only if non-empty and no cmdline override
+FW_EXT="$TINYOS_DIR/lib/firmware"
+if [ -d "$FW_EXT" ] && \
+   busybox find "$FW_EXT" -type f -print 2>/dev/null | head -n1 >/dev/null; then
+  if ! printf '%s' "$CMDLINE" | tr ' ' '\n' | grep -q '^firmware_class.path='; then
+    mkdir -p /lib/firmware
+    mountpoint -q /lib/firmware || mount --bind "$FW_EXT" /lib/firmware 2>/dev/null || true
+    set_sysfs "/sys/module/firmware_class/parameters/path" "/lib/firmware" || true
+  fi
+fi
+
+# Apply HP_TOOLS sysfs.d after it’s available
+apply_sysfs_dir "$TINYOS_DIR/sysfs.d"
+
+# Optional niceties (ignore failures)
+modprobe hp_wmi     2>/dev/null || true
+modprobe lis3lv02d  2>/dev/null || true
+modprobe rfkill     2>/dev/null || true
+
+log "Handing off to BusyBox init (PID stays 1)"
+exec /bin/busybox init
+panic "busybox init failed; dropping to shell"
