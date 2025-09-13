@@ -1,6 +1,0 @@
-TOOLS_MOUNT := /boot/hp_tools
-TINYOS_REL := EFI/tinyos
-ESP_MOUNT := /boot/efi
-INSTALL_NAME := tinyos.efi
-TOOLS_HINT := PARTUUID=409c6382-46ba-4cb8-a21f-618e2ac1c518
-
