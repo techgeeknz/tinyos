@@ -2,3 +2,29 @@
 # Example:
 # kernel/drivers/ata/ahci.ko
 # kernel/drivers/scsi/sd_mod.ko
+# --- Input stack (so you can actually type) ---
+serio
+i8042
+atkbd
+hid
+hid-generic
+usbhid
+xhci-pci
+ehci-pci
+ohci-pci
+uhci-hcd
+
+# --- Core fb/console modules ---
+fb
+fbcon
+
+# --- Generic framebuffer drivers ---
+fb_efi
+vesafb
+simplefb
+vga16fb
+
+# --- DRM fallback ---
+drm
+drm_kms_helper
+simpledrm

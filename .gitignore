@@ -3,6 +3,7 @@ linux
 linux-headers
 linux-firmware
 staging
+config/.tinyos.mk
 *.iso
 *.img
 *.cpio

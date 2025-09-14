@@ -3,14 +3,34 @@
 # Goal: fast boot to a recovery shell for EFI tweaks (e.g., rEFInd config), no in-init editor.
 # Handoff to BusyBox init by default.
 
-set -eu
+
+# Bind stdin/stdout/stderr to the console early
+exec </dev/console >/dev/console 2>&1
+
+set -Eeux
+trap 'echo "[init] ERROR at line $LINENO"; exec sh' ERR
+
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export LANG=C LC_ALL=C
 
+# Enforce a unified /bin
+if [ "$(/bin/busybox realpath /bin)" != "$(/bin/busybox realpath /sbin)" ]; then
+  /bin/busybox mkdir -p /tbin
+  /bin/busybox cp -a /bin/busybox /tbin/busybox
+  /tbin/busybox mv -ft /tbin /sbin/*
+  /tbin/busybox mv -ft /tbin /bin/*
+  /tbin/busybox rm -rf /bin /sbin
+  /tbin/busybox mv /tbin /bin
+  /bin/busybox ln -sf /sbin /bin
+fi
+
 # BusyBox self-install (foreground, critical)
 # (We do this early so all applets are available.)
-/bin/busybox mkdir -p /bin /sbin
-/bin/busybox --install -s /
+/bin/busybox --install -s /bin
+
+# Bring up mdev for /dev population and hotplug handling
+echo /sbin/mdev > /proc/sys/kernel/hotplug
+mdev -s
 
 # Defaults (can be overridden via /etc/tinyos.conf)
 TOOLS_MOUNT=/boot/hp_tools
@@ -260,6 +280,9 @@ apply_sysfs_dir "$TINYOS_DIR/sysfs.d"
 modprobe hp_wmi     2>/dev/null || true
 modprobe lis3lv02d  2>/dev/null || true
 modprobe rfkill     2>/dev/null || true
+
+log "Dropping to shell (type "\""exit"\"" to resume boot")"
+setsid cttyhack /bin/sh
 
 log "Handing off to BusyBox init (PID stays 1)"
 exec /bin/busybox init
