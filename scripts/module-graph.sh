@@ -2,6 +2,7 @@
 set -euo pipefail
 # Compute transitive module closures from modules.dep
 # Emits files into --out-dir with a prefix based on --label:
+#   .<label>.builtins   # modules skipped because built into kernel
 #   .<label>.resolved   # resolved seed modules
 #   .<label>.closure    # full closure of dependencies
 #   .<label>.added_deps # transitive dependencies discovered
@@ -36,6 +37,7 @@ mkdir -p "$OUTDIR"
 log "KVER=$KVER, MODDIR=$MODDIR, LABEL=$LABEL"
 
 prefix="$LABEL"
+out_bui="$OUTDIR/.$prefix.builtins"
 out_res="$OUTDIR/.$prefix.resolved"
 out_clo="$OUTDIR/.$prefix.closure"
 out_add="$OUTDIR/.$prefix.added_deps"
@@ -51,6 +53,12 @@ resolve_rel() {
   [[ $req == *.ko* ]] || req="${req%.ko}.ko"
   local base=$(basename "$req")
   local f
+  # search builtins
+  if grep -F "${base%.ko*}.ko" "$MODDIR/modules.builtin" >> "$out_bui"; then
+    echo "[modules-graph] skipping builtin: ${base%.ko*}" >&2
+    return 0
+  fi
+  # search by path
   for f in "$MODDIR/$req" "$MODDIR/${req}.zst" "$MODDIR/${req}.xz" "$MODDIR/${req}.gz"; do
     [ -f "$f" ] && { echo "${f#"$MODDIR"/}"; return 0; }
   done
@@ -61,15 +69,16 @@ resolve_rel() {
 }
 
 # load seed (comments allowed). Missing/empty seed file is OK.
-: >"$tmp_seed"
+: >"$tmp_seed"; : >"$out_mis"
 if [ -f "$SEED" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue;; esac
     if rel=$(resolve_rel "$line"); then
-      log "seed: $line -> $rel"
-      printf '%s\n' "$rel" >>"$tmp_seed"
+      if [ -n "$rel" ]; then
+        log "seed: $line -> $rel"
+        printf '%s\n' "$rel" >>"$tmp_seed"
+      fi
     else
-      echo "ERROR: seed not found: $line" >&2; exit 1
       echo "[modules-graph] WARN: seed not found: $line" >&2
       printf '%s\n' "$line" >>"$out_mis"
     fi
@@ -80,7 +89,6 @@ cp -f "$tmp_seed" "$out_res"
 
 # BFS closure
 : >"$out_clo"; : >"$out_add"; : >"$out_mods"
-[ -f "$out_mis" ] || : >"$out_mis"
 seen=$(mktemp); trap 'rm -f "$tmp_seed" "$seen"' EXIT
 touch "$seen"
 
@@ -118,4 +126,5 @@ sort -u "$out_clo" -o "$out_clo"
 sort -u "$out_mods" -o "$out_mods"
 [ -s "$out_add" ] && sort -u "$out_add" -o "$out_add" || true
 [ -s "$out_mis" ] && sort -u "$out_mis" -o "$out_mis" || true
+[ -s "$out_bui" ] && sort -u "$out_bui" -o "$out_bui" || true
 log "closure entries: $(wc -l <"$out_clo" 2>/dev/null || echo 0)"
