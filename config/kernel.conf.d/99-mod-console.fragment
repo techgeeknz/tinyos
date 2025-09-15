@@ -1,4 +1,4 @@
-# --- Core plumbing (built-in so PID1 can print something) --------------------
+# Core plumbing
 CONFIG_MODULES=y
 CONFIG_KMOD=y
 CONFIG_DEVTMPFS=y
@@ -9,79 +9,56 @@ CONFIG_VT_CONSOLE=y
 CONFIG_UNIX98_PTYS=y
 CONFIG_HW_CONSOLE=y
 
-# Early EFI bring-up and stub
+# EFI + early output
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 CONFIG_EFI_EARLYCON=y
 
-# --- Serial console (modular, so it can’t steal output unless you load it) ---
-CONFIG_SERIAL_8250=m
-CONFIG_SERIAL_8250_CONSOLE=y
-CONFIG_SERIAL_EARLYCON=y
-
-# --- Framebuffer core + console (modular; load from initramfs) ---------------
-CONFIG_FB=m
-CONFIG_FRAMEBUFFER_CONSOLE=m
+# Framebuffer console: built-in so you always see output
+CONFIG_FB=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
-# helpers (some archs make these bool; harmless if ignored)
-CONFIG_FB_CFB_FILLRECT=m
-CONFIG_FB_CFB_COPYAREA=m
-CONFIG_FB_CFB_IMAGEBLIT=m
+# helpers (some arches ignore if not applicable)
+CONFIG_FB_CFB_FILLRECT=y
+CONFIG_FB_CFB_COPYAREA=y
+CONFIG_FB_CFB_IMAGEBLIT=y
 
-# Generic fbdev drivers (EFI/vesa/simplefb)
-CONFIG_FB_EFI=m
+# The one that matters on GOP: built-in
+CONFIG_FB_EFI=y
+
+# Optional/text VGA (can help if CSM text survives)
+CONFIG_VGA_CONSOLE=m
+# CONFIG_VGACON_SOFT_SCROLLBACK is not set
+
+# Keep alternates modular for testing
 CONFIG_FB_SIMPLE=m
 CONFIG_FB_VESA=m
 CONFIG_FB_VGA16=m
-# Text-mode VGA console (not fb) — keep y so you always have *some* tty
-CONFIG_VGA_CONSOLE=y
-# Optional: shrink/disable scrollback to avoid weirdness on ancient firmware
-# CONFIG_VGACON_SOFT_SCROLLBACK is not set
 
-# --- DRM simpledrm path (modular) --------------------------------------------
-CONFIG_DRM=m
-CONFIG_DRM_KMS_HELPER=m
+# DRM/simpledrm modular (try if efifb is flaky or too slow)
+CONFIG_DRM=y
+CONFIG_DRM_KMS_HELPER=y
 CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_DRM_SIMPLEDRM=m
 
-# --- A grab-bag of legacy fbdev chip drivers (modular “just in case”) --------
-CONFIG_FB_RIVA=m
-CONFIG_FB_NVIDIA=m
-CONFIG_FB_ATY=m
-CONFIG_FB_ATY_CT=m
-CONFIG_FB_ATY_GX=m
-CONFIG_FB_ATY128=m
-CONFIG_FB_RADEON=m
-CONFIG_FB_MATROX=m
-CONFIG_FB_MATROX_MILLENIUM=m
-CONFIG_FB_MATROX_G=m
-CONFIG_FB_MATROX_I2C=m
-CONFIG_FB_S3=m
-CONFIG_FB_SAVAGE=m
-CONFIG_FB_VIA=m
-CONFIG_FB_SIS=m
-CONFIG_FB_TRIDENT=m
-CONFIG_FB_CIRRUS=m
-CONFIG_FB_NEOMAGIC=m
-CONFIG_FB_ARK=m
-CONFIG_FB_I740=m
-CONFIG_FB_3DFX=m
-CONFIG_FB_GEODE=m
-CONFIG_FB_SMSCUFX=m
-CONFIG_FB_UDL=m
+# Input so you can type (build in the basics; USB as modules is fine)
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_SERIO=y
+CONFIG_SERIO_I8042=y
+CONFIG_SERIO_LIBPS2=y
+CONFIG_KEYBOARD_ATKBD=y
 
-# --- Input so you can actually type (modular; add to earlyboot) --------------
-CONFIG_INPUT=m
-CONFIG_INPUT_EVDEV=m
-CONFIG_SERIO=m
-CONFIG_SERIO_I8042=m
-CONFIG_SERIO_LIBPS2=m
-CONFIG_KEYBOARD_ATKBD=m
-CONFIG_HID=m
-CONFIG_HID_GENERIC=m
-CONFIG_USB=m
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+CONFIG_USB=y
 CONFIG_USB_XHCI_HCD=m
 CONFIG_USB_EHCI_HCD=m
 CONFIG_USB_OHCI_HCD=m
 CONFIG_USB_UHCI_HCD=m
-CONFIG_USB_HID=m
+
+# Serial console (modular so it won’t steal output unless you ask)
+CONFIG_SERIAL_8250=n
+CONFIG_SERIAL_8250_CONSOLE=n
+CONFIG_SERIAL_EARLYCON=n

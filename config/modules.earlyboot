@@ -19,7 +19,7 @@ fb
 fbcon
 
 # --- Generic framebuffer drivers ---
-fb_efi
+efifb
 vesafb
 simplefb
 vga16fb

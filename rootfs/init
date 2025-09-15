@@ -249,8 +249,11 @@ else
   log "ESP not found (continuing)"
 fi
 
-# ---------- Bind in external modules/firmware from HP_TOOLS ----------
+# Brute-force load all initramfs modules
 KVER="$(uname -r)"
+find "/lib/modules/$KVER/" -name '*.ko*' -print0 | xargs -r0 modprobe || true
+
+# ---------- Bind in external modules/firmware from HP_TOOLS ----------
 
 # Modules: bind only if directory appears to contain supplemental assets, ignore otherwise
 MOD_EXT="$TINYOS_DIR/lib/modules/$KVER"
