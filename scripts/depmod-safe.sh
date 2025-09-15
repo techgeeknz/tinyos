@@ -41,20 +41,27 @@ log "MODROOT: $MODROOT"
 [ -n "$KVER" ] || { [ -x "$STAGED_KVER" ] || die "missing helper: $STAGED_KVER"; KVER="$("$STAGED_KVER" --modules-root "$MODROOT/lib/modules" --one ${VERBOSE:+--verbose})"; }
 [ -d "$MODROOT/lib/modules/$KVER" ] || die "Missing tree: $MODROOT/lib/modules/$KVER"
 
-log "Running: depmod -b '$MODROOT' '$KVER'"
-# Capture stderr to inspect for benign cycle warnings
-TMPERR=$(mktemp); trap 'rm -f "$TMPERR"' EXIT
-if depmod -b "$MODROOT" "$KVER" 2>"$TMPERR"; then
-  log "depmod ok"
-  exit 0
-fi
+TMPERR=$(mktemp); trap "rm -f '$TMPERR'" EXIT
+for attempt in 1 2 3; do
+  log "Running: depmod -b '$MODROOT' '$KVER'"
+  # Capture stderr to inspect for benign cycle warnings
+  if depmod -b "$MODROOT" "$KVER" 2> >(tee "$TMPERR" >&2); then
+    log "depmod succeeded on attempt $attempt"
+    exit 0
+  fi
 
-if grep -qEi 'Cycle detected' "$TMPERR" && ! grep -qEiv 'Cycle detected' "$TMPERR"; then
-  echo "[depmod-safe] WARN: depmod reported module dependency cycle(s); treating as non-fatal." >&2
-  sed -n '1,200p' "$TMPERR" >&2
-  exit 0
-fi
+  # Quarantine dependency cycles
+  awk '
+  /Cycle detected:/ {
+    gsub(/^.*Cycle detected:|->|[[:space:]][[:space:]]}/, " ", $0);
+    n = split($0, m); for (i = 1; i <= n; i++) print m[i];
+  }' < "$TMPERR" | sort -u |
+  while read module; do
+    log "quarantining module: $module"
+    mkdir -p "$MODROOT/lib/modules/$KVER.disabled"
+    find "$MODROOT/lib/modules/$KVER" -type f -name "${module}.ko*" -print0 |
+    xargs -r0 mv -t "$MODROOT/lib/modules/$KVER.disabled"
+  done
+done
 
-echo "[depmod-safe] depmod failed:" >&2
-sed -n '1,200p' "$TMPERR" >&2
-exit 1
+die "depmod failed after $attempt attempts"
