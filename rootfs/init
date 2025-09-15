@@ -21,12 +21,17 @@ if [ "$(/bin/busybox realpath /bin)" != "$(/bin/busybox realpath /sbin)" ]; then
   /tbin/busybox mv -ft /tbin /bin/*
   /tbin/busybox rm -rf /bin /sbin
   /tbin/busybox mv /tbin /bin
-  /bin/busybox ln -sf /sbin /bin
+  /bin/busybox ln -sf /bin /sbin
 fi
 
 # BusyBox self-install (foreground, critical)
 # (We do this early so all applets are available.)
 /bin/busybox --install -s /bin
+
+# Pseudo-fs (idempotent)
+mountpoint -q /proc || mount -t proc     proc     /proc  2>/dev/null || true
+mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   2>/dev/null || true
+mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   2>/dev/null || true
 
 # Bring up mdev for /dev population and hotplug handling
 echo /sbin/mdev > /proc/sys/kernel/hotplug
@@ -96,11 +101,6 @@ TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
 
 log()   { echo "[initramfs] $*"; }
 panic() { echo "[initramfs] ERROR: $*" >&2; exec cttyhack sh; }
-
-# Pseudo-fs (idempotent)
-mountpoint -q /proc || mount -t proc     proc     /proc  2>/dev/null || true
-mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   2>/dev/null || true
-mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   2>/dev/null || true
 
 # Quiet the kernel a touch (best-effort)
 [ -w /proc/sys/kernel/printk ] && echo 3 4 1 3 > /proc/sys/kernel/printk 2>/dev/null || true
