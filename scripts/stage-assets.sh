@@ -9,7 +9,7 @@
 #     [--readme-payload   ./rootfs/README.payload] \
 #     [--files-dir        ./config/files]         # expects subdirs: initramfs/ and payload/ \
 #     [--tinyos-conf      ./config/tinyos.conf]   # written ONLY to initramfs/etc/tinyos.conf \
-#     [--verbose] [--dry-run]
+#     [--verbose]
 #
 # Notes:
 #   - We create BusyBox init scaffolding first (/etc/inittab + /etc/init.d/rcS),
@@ -25,11 +25,10 @@ set -eu
 die(){ echo "ERROR: $*" >&2; exit 1; }
 warn(){ echo "WARN: $*" >&2; }
 msg(){ [ "${VERBOSE:-0}" = "1" ] && echo "$*" >&2 || :; }
-run(){ if [ "${DRYRUN:-0}" = "1" ]; then echo "+ $*"; else sh -c "$*"; fi; }
 abs(){ (cd "$(dirname -- "$1")" && printf '%s/%s\n' "$(pwd -P)" "$(basename -- "$1")"); }
 
 STAGE_ROOT= INIT_SRC= README_INIT= README_PAY= BUSYBOX_BIN= FILES_DIR= TINYOS_CONF=
-VERBOSE=0 DRYRUN=0
+VERBOSE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -41,7 +40,6 @@ while [ "$#" -gt 0 ]; do
     --files-dir)        FILES_DIR="$2"; shift 2;;
     --tinyos-conf)      TINYOS_CONF="$2"; shift 2;;
     --verbose|-v)       VERBOSE=1; shift;;
-    --dry-run)          DRYRUN=1; shift;;
     --help|-h)          sed -n '1,220p' "$0"; exit 0;;
     *) die "unknown arg: $1";;
   esac
@@ -66,7 +64,7 @@ BUSYBOX_BIN="$(abs "$BUSYBOX_BIN")"
 
 INITRAMFS_DIR="$STAGE_ROOT/initramfs"
 PAYLOAD_DIR="$STAGE_ROOT/payload"
-run "mkdir -p '$INITRAMFS_DIR/etc/init.d' '$PAYLOAD_DIR'"
+mkdir -p "$INITRAMFS_DIR"/{etc/init.d,proc,sys,dev,bin} "$PAYLOAD_DIR"
 
 # Guard: refuse overlays that try to drop core binaries
 check_overlay_conflicts() {
@@ -85,37 +83,20 @@ copy_tree(){ # src dest
 }
 
 # 1) BusyBox init scaffolding FIRST (allow overlays to override later)
+#    Note: This script symlinks /sbin/init -> /init, so the kernel can find
+#    it. At runtime, /init overrides /sbin/init -> /bin/busybox immediately
+#    before handing off to busybox init.
 cat >"$INITRAMFS_DIR/etc/inittab" <<'INITTAB'
-::sysinit:/etc/init.d/rcS
-tty1::respawn:/bin/sh
-tty2::respawn:/bin/sh
-tty3::respawn:/bin/sh
-tty4::respawn:/bin/sh
-tty5::respawn:/bin/sh
-tty6::respawn:/bin/sh
+console::respawn:/bin/sh
+tty0::askfirst:/bin/sh
+tty1::askfirst:/bin/sh
+tty2::askfirst:/bin/sh
+tty3::askfirst:/bin/sh
 ::ctrlaltdel:/bin/umount -a -r
 ::shutdown:/bin/umount -a -r
+::restart:/sbin/init
 INITTAB
 chmod 0644 "$INITRAMFS_DIR/etc/inittab"
-
-# rcS: only mount proc/sys/dev if not already mounted (use busybox mountpoint)
-cat >"$INITRAMFS_DIR/etc/init.d/rcS" <<'RCS'
-#!/bin/sh
-set -eu
-
-mp() { busybox mountpoint -q "$1"; }  # returns 0 if mounted
-
-[ -d /proc ] || mkdir -p /proc
-[ -d /sys  ] || mkdir -p /sys
-[ -d /dev  ] || mkdir -p /dev
-
-mp /proc || mount -t proc     proc     /proc  || true
-mp /sys  || mount -t sysfs    sysfs    /sys   || true
-mp /dev  || mount -t devtmpfs devtmpfs /dev   || true
-
-exit 0
-RCS
-chmod 0755 "$INITRAMFS_DIR/etc/init.d/rcS"
 
 # 2) Overlays (only the two subdirectories so they can override inittab/rcS if desired)
 if [ -n "${FILES_DIR:-}" ]; then
@@ -132,55 +113,54 @@ if [ -n "${FILES_DIR:-}" ]; then
 fi
 
 # 2.1) Install README files, if not overridden by overlay
-if [ ! -f "$INITRAMFS_DIR/README" ] && [ -f "$README_INIT" ]; then
+if [ ! -e "$INITRAMFS_DIR/README" ] && [ -f "$README_INIT" ]; then
   msg "emit: README → $INITRAMFS_DIR/README"
-  run "install -m 644 '$README_INIT' '$INITRAMFS_DIR/README'"
+  install -m 644 "$README_INIT" "$INITRAMFS_DIR/README"
 fi
-if [ ! -f "$PAYLOAD_DIR/README" ] && [ -f "$README_PAY" ]; then
+if [ ! -e "$PAYLOAD_DIR/README" ] && [ -f "$README_PAY" ]; then
   msg "emit: README → $PAYLOAD_DIR/README"
-  run "install -m 644 '$README_PAY' '$PAYLOAD_DIR/README'"
+  install -m 644 "$README_PAY" "$PAYLOAD_DIR/README"
 fi
 
-# 3) Authoritative init + busybox LAST (avoid overlay shadowing)
+# 3) Lightweight FHS symlinks if available (do not clobber real /usr)
+# Unconditionally merge /bin and /sbin; /bin wins
+TMPBIN="$(mktemp -d "$INITRAMFS_DIR/.bin.XXXXXX")"
+# move contents of /sbin then /bin into TMPBIN, if any
+for d in "$INITRAMFS_DIR/sbin" "$INITRAMFS_DIR/bin"; do
+  [ -d "$d" ] || continue
+  # move non-hidden and hidden (excluding . and ..)
+  for f in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    [ -e "$f" ] || continue
+    mv -f "$f" "$TMPBIN"/
+  done
+  [ -h "$d" ] && rm -f "$d" || rmdir "$d"
+done
+mv -f "$TMPBIN" "$INITRAMFS_DIR/bin"
+ln -snf bin "$INITRAMFS_DIR/sbin"
+
+# /usr/bin → /bin ; /usr/sbin → /bin (don't clobber existing directories)
+[ -d "$INITRAMFS_DIR/usr" ]      || mkdir -p "$INITRAMFS_DIR/usr"
+[ -d "$INITRAMFS_DIR/usr/bin" ]  || ln -snf ../bin "$INITRAMFS_DIR/usr/bin"
+[ -d "$INITRAMFS_DIR/usr/sbin" ] || ln -snf ../bin "$INITRAMFS_DIR/usr/sbin"
+
+# 4) Authoritative init + busybox LAST (avoid overlay shadowing)
 #    Enforce single canonical init at /init, with compatibility link at /sbin/init.
-run "mkdir -p '$INITRAMFS_DIR/sbin' '$INITRAMFS_DIR/bin' '$INITRAMFS_DIR/etc'"
-# Remove any stray inits that overlays may have tried to add indirectly.
-[ -e "$INITRAMFS_DIR/sbin/init" ] && run "rm -f '$INITRAMFS_DIR/sbin/init'"
-[ -e "$INITRAMFS_DIR/bin/init"  ] && run "rm -f '$INITRAMFS_DIR/bin/init'"
-[ -e "$INITRAMFS_DIR/init"      ] && run "rm -f '$INITRAMFS_DIR/init'"
+[ ! -e "$INITRAMFS_DIR/etc/init"  ] || rm -f "$INITRAMFS_DIR/etc/init"
+[ ! -e "$INITRAMFS_DIR/sbin/init" ] || rm -f "$INITRAMFS_DIR/sbin/init"
+[ ! -e "$INITRAMFS_DIR/bin/init"  ] || rm -f "$INITRAMFS_DIR/bin/init"
+[ ! -e "$INITRAMFS_DIR/init"      ] || rm -f "$INITRAMFS_DIR/init"
 msg "install: $INIT_SRC → $INITRAMFS_DIR/init"
-run "install -m 0755 '$INIT_SRC' '$INITRAMFS_DIR/init'"
-# Provide compatibility path for userspace that still expects /sbin/init.
-[ -L "$INITRAMFS_DIR/sbin/init" ] || run "ln -sf ../init '$INITRAMFS_DIR/sbin/init'"
-
-# 3.1) Lightweight FHS symlinks if available (do not clobber real /usr)
-# /sbin → /bin (move contents if any, then replace with symlink)
-if [ -d "$INITRAMFS_DIR/sbin" ] && [ ! -L "$INITRAMFS_DIR/sbin" ]; then
-  # Move files if the dir isn't empty (ignore “No such file” on empty)
-  run "set -f; mv '$INITRAMFS_DIR'/sbin/* '$INITRAMFS_DIR/bin/' 2>/dev/null || true; set +f"
-  run "rmdir '$INITRAMFS_DIR/sbin' 2>/dev/null || rm -rf '$INITRAMFS_DIR/sbin'"
-fi
-run "ln -snf bin '$INITRAMFS_DIR/sbin'"
-
-# /usr/bin → /bin ; /usr/sbin → /bin
-if [ ! -d "$INITRAMFS_DIR/usr" ]; then
-  run "mkdir -p '$INITRAMFS_DIR/usr'"
-fi
-if [ ! -d "$INITRAMFS_DIR/usr/bin" ] || [ -h "$INITRAMFS_DIR/usr/bin" ]; then
-  [ -h "$INITRAMFS_DIR/usr/bin" ] || run "ln -snf ../bin '$INITRAMFS_DIR/usr/bin'"
-fi
-if [ ! -d "$INITRAMFS_DIR/usr/sbin" ] || [ -h "$INITRAMFS_DIR/usr/sbin" ]; then
-  [ -h "$INITRAMFS_DIR/usr/sbin" ] || run "ln -snf ../bin '$INITRAMFS_DIR/usr/sbin'"
-fi
+install -m 0755 "$INIT_SRC" "$INITRAMFS_DIR/init"
+ln -sf ../init "$INITRAMFS_DIR/sbin/init"
 
 msg "install: $BUSYBOX_BIN → $INITRAMFS_DIR/bin/busybox"
-run "install -m 0755 '$BUSYBOX_BIN' '$INITRAMFS_DIR/bin/busybox'"
-[ -L "$INITRAMFS_DIR/bin/sh" ] || run "ln -sf busybox '$INITRAMFS_DIR/bin/sh'"
+install -m 0755 "$BUSYBOX_BIN" "$INITRAMFS_DIR/bin/busybox"
+ln -sf busybox "$INITRAMFS_DIR/bin/sh"
 
 # 4) tinyos.conf ONLY to initramfs
 if [ -n "${TINYOS_CONF:-}" ]; then
   msg "install: tinyos.conf → $INITRAMFS_DIR/etc/tinyos.conf"
-  run "install -m 0644 '$TINYOS_CONF' '$INITRAMFS_DIR/etc/tinyos.conf'"
+  install -m 0644 "$TINYOS_CONF" "$INITRAMFS_DIR/etc/tinyos.conf"
 fi
 
 msg "assets staged (scaffolding → overlays → init+busybox → tinyos.conf)"

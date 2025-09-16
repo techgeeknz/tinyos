@@ -151,14 +151,18 @@ log "Packing initramfs from '$STAGE_DIR' → '$OUT_ABS' (COMP=$COMP, fakeroot=1)
   # Create minimal device nodes under fakeroot just before archiving
   fakeroot -- sh -c '
     set -e
-    mkdir -p dev
+    mkdir -p proc sys dev
+    rm -rf mnt run tmp || true
+    mkdir -p mnt run tmp
+    chmod 1777 tmp
+    chmod 0755 run
     [ -c dev/console ] || mknod -m 600 dev/console c 5 1
     [ -c dev/null ]    || mknod -m 666 dev/null    c 1 3
     chown -R root:root .
     # IMPORTANT: -mindepth 1 prevents the empty name for "." which breaks cpio.
     LC_ALL=C find . -mindepth 1 -printf '\''%P\0'\'' \
       | LC_ALL=C sort -z \
-      | cpio -0 -o --format=newc # 2>/dev/null
+      | cpio -0 -o --format=newc
   ' | compress >"$OUT_ABS"
 )
 
