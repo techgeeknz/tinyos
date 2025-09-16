@@ -6,36 +6,73 @@
 
 # Bind stdin/stdout/stderr to the console early
 exec </dev/console >/dev/console 2>&1
-
-set -Eeux
-trap 'echo "[init] ERROR at line $LINENO"; exec sh' ERR
-
+set -eu
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export LANG=C LC_ALL=C
 
-# Enforce a unified /bin
-if [ "$(/bin/busybox realpath /bin)" != "$(/bin/busybox realpath /sbin)" ]; then
-  /bin/busybox mkdir -p /tbin
-  /bin/busybox cp -a /bin/busybox /tbin/busybox
-  /tbin/busybox mv -ft /tbin /sbin/*
-  /tbin/busybox mv -ft /tbin /bin/*
-  /tbin/busybox rm -rf /bin /sbin
-  /tbin/busybox mv /tbin /bin
-  /bin/busybox ln -sf /bin /sbin
+BB=/bin/busybox
+link_bb() {
+  if [ -h "$BB" ]; then
+    "$BB" ln -snfb "$("$BB" readlink "$BB")" "$1" || true
+  else
+    "$BB" ln -snfb "$BB" "$1" || true
+  fi
+}
+
+# Millisecond-ish uptime stamp like the kernel
+_ts()   { "$BB" awk '{printf "[%10.6f]", $1}' /proc/uptime 2>/dev/null ||
+          printf "[   .      ]"; }
+log()   { printf "%s %s %s\n" "$(_ts)" "[init]" "$*" >&2; }
+panic() { log 'ERROR:' "$*"; exec "$BB" setsid "$BB" cttyhack "$BB" sh; }
+trap 'rc=$?; [ $rc -eq 0 ] || panic "init exited with status $rc";' EXIT
+
+# Pseudo-fs (idempotent)
+mnt_pfs() { "$BB" mount -t "$1" "$2" "$3" || panic "mnt_pfs: mount $3 failed"; }
+"$BB" mkdir -p /proc /sys /dev
+mnt_pfs proc     proc     /proc
+mnt_pfs sysfs    sysfs    /sys
+mnt_pfs devtmpfs devtmpfs /dev
+"$BB" rm -rf /run || true; "$BB" mkdir -p /run || true
+if "$BB" ln -snf /proc/$$/exe /run/busybox; then
+  BB=/run/busybox
 fi
+
+# Enforce a unified /bin ( /sbin -> /bin preferred, but /bin -> /sbin okay)
+[ -d /sbin ] || { [ ! -e /sbin ] || "$BB" rm -f /sbin; "$BB" ln -snf /bin /sbin; }
+if [ "$("$BB" realpath /bin)" != "$("$BB" realpath /sbin)" ]; then
+  log "unifying /sbin -> /bin"
+  "$BB" mkdir -p /tbin
+  "$BB" mv -ft /tbin /sbin/* /sbin/.[!.]* /sbin/..?* || true
+  "$BB" mv -ft /tbin /bin/*  /bin/.[!.]*  /bin/..?*  || true
+  "$BB" rm -rf /bin /sbin
+  "$BB" mv -f  /tbin /bin
+  "$BB" ln -snf /bin /sbin
+fi
+
+# finish setting up essential FSH directories
+"$BB" rm -rf /tmp /mnt || true
+"$BB" mkdir -p /tmp /mnt /run/lock /run/log || true
+"$BB" chmod 1777 /tmp || true
+"$BB" chmod 0755 /run /run/lock /run/log || true
+
+# Finish setting up /dev
+[ -d /dev/pts ] || { "$BB" rm -rf /dev/pts; "$BB" mkdir -p /dev/pts; }
+"$BB" mountpoint -q /dev/pts || "$BB" mount -t devpts devpts /dev/pts || true
+[ -e /dev/ptmx ] || "$BB" ln -s /dev/pts/ptmx /dev/ptmx || true
 
 # BusyBox self-install (foreground, critical)
 # (We do this early so all applets are available.)
-/bin/busybox --install -s /bin
+log "install busybox"
+"$BB" [ ! -e /tbin ] || "$BB" rm -rf /tbin
+"$BB" mkdir -p /tbin
+"$BB" --install -s /tbin
+"$BB" mv -nt /bin /tbin/* /tbin/.[!.]* /tbin/..?* || true
+"$BB" rm -rf /tbin
 
-# Pseudo-fs (idempotent)
-mountpoint -q /proc || mount -t proc     proc     /proc  2>/dev/null || true
-mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   2>/dev/null || true
-mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   2>/dev/null || true
 
 # Bring up mdev for /dev population and hotplug handling
 echo /sbin/mdev > /proc/sys/kernel/hotplug
-mdev -s
+"$BB" mdev -s
 
 # Defaults (can be overridden via /etc/tinyos.conf)
 TOOLS_MOUNT=/boot/hp_tools
@@ -53,14 +90,11 @@ ESP_HINT=""
 # then source it.
 CFG=/etc/tinyos.conf
 if [ -f "$CFG" ]; then
-  # Fresh /run and fixed debug-friendly temp path
-  mkdir -p /run || true
-  mount -t tmpfs -o mode=0755,nosuid,nodev,noexec tmpfs /run 2>/dev/null || true
   _tmp_conf="/run/tinyos.conf"
   : >"$_tmp_conf" || true
 
   # sed: strip CR, comments, trim, drop blanks, normalize spaces, keep only KEY=VALUE
-  /bin/busybox sed -rn \
+  "$BB" sed -rn \
     -e 's/\r$//' \
     -e '/^[[:space:]]*#/d' \
     -e '/^[[:space:]]*$/d' \
@@ -68,7 +102,7 @@ if [ -f "$CFG" ]; then
     -e 's/[[:space:]]*=[[:space:]]*/=/' \
     -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
     "$CFG" |
-  /bin/busybox awk '{
+  "$BB" awk '{
     # Split at first "="
     i = index($0, "=");
     k = substr($0, 1, i-1);
@@ -99,15 +133,11 @@ ESP_MOUNT="${ESP_MOUNT%/}"
 # NOTE: keep EFI/ — do NOT strip it.
 TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
 
-log()   { echo "[initramfs] $*"; }
-panic() { echo "[initramfs] ERROR: $*" >&2; exec cttyhack sh; }
-
 # Quiet the kernel a touch (best-effort)
 [ -w /proc/sys/kernel/printk ] && echo 3 4 1 3 > /proc/sys/kernel/printk 2>/dev/null || true
 
-# Base dirs (foreground, critical)
-mkdir -p /mnt /tmp "$ESP_MOUNT" "$TOOLS_MOUNT"
-chmod 1777 /tmp 2>/dev/null || true
+# Create filesystem mountpoints
+"$BB" mkdir -p "$ESP_MOUNT" "$TOOLS_MOUNT"
 
 # Cmdline
 CMDLINE="$(cat /proc/cmdline 2>/dev/null || true)"
@@ -124,7 +154,7 @@ set_sysfs() { # set_sysfs <abs-or-rel-path-under-/sys> <value>
   # 2) Cheap traversal guard even without canonicalization
   case "$abs" in *"/.."*|*"../"*) log "sysfs: reject path with '..': '${abs#/sys/}'"; return 1 ;; esac
   # 3) Canonicalize with BusyBox readlink (if it resolves, enforce /sys prefix)
-  rp="$(/bin/busybox readlink -f -- "$abs" 2>/dev/null || true)"
+  rp="$("$BB" readlink -f -- "$abs" 2>/dev/null || true)"
   if [ -n "$rp" ]; then
     case "$rp" in /sys/*) abs="$rp" ;; *) log "sysfs: canonical path escapes /sys: '$rp'"; return 1 ;; esac
   fi
@@ -143,8 +173,8 @@ apply_sysfs_dir() { # apply_sysfs_dir <dir> ; *.conf "path = value", comments/# 
         *=*) k="${line%%=*}"; v="${line#*=}";;
         *) continue;;
       esac
-      k="$(printf '%s' "$k" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-      v="$(printf '%s' "$v" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+      k="$(printf '%s' "$k" | "$BB" sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+      v="$(printf '%s' "$v" | "$BB" sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
       # Warn if an absolute path is not under /sys (it will be rejected by set_sysfs anyway)
       case "$k" in /sys/*) : ;; /*) log "sysfs: warning: absolute path not under /sys: '$k'";; esac
       [ -n "$k" ] && set_sysfs "$k" "$v" || true
@@ -159,15 +189,15 @@ apply_sysfs_dir "/etc/sysfs.d"
 resolve_hint() { # $1: hint
   h="$1"
   case "$h" in
-    LABEL=*|UUID=*|PARTUUID=*|PARTLABEL=*) blkid -t "$h" -o device 2>/dev/null | head -n1 ;;
+    LABEL=*|UUID=*|PARTUUID=*|PARTLABEL=*) "$BB" blkid -t "$h" -o device 2>/dev/null | "$BB" head -n1 ;;
     /dev/*) printf '%s\n' "$h" ;;
     *)      printf '\n' ;;
   esac
 }
 mount_fat_ro() {  # $1:dev $2:mountpoint
   dev="$1"; mnt="$2"
-  mount -t vfat -o ro,nodev,nosuid,noexec "$dev" "$mnt" 2>/dev/null ||
-  mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null || return 1
+  "$BB" mount -t vfat -o ro,nodev,nosuid,noexec "$dev" "$mnt" 2>/dev/null ||
+  "$BB" mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null || return 1
 }
 
 # ---------- HP_TOOLS (toolbox partition) ----------
@@ -184,23 +214,23 @@ done
 
 # Try explicit device first (if given)
 if [ -n "${TOOLS_DEV:-}" ]; then
-  mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
+  mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
 fi
 
 # Otherwise, prefer a VFAT device whose LABEL is exactly HP_TOOLS (enforced by firmware)
 if [ -z "${TOOLS_DEV:-}" ]; then
   TOOLS_DEV="$(resolve_hint "LABEL=HP_TOOLS" || true)"
   if [ -n "${TOOLS_DEV:-}" ]; then
-    mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
+    mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
   fi
 fi
 
 # As a final fallback, probe all VFAT devices and match LABEL value
 if [ -z "${TOOLS_DEV:-}" ]; then
-  for d in $(blkid -t TYPE=vfat -o device 2>/dev/null || true); do
-    lbl="$(blkid -s LABEL -o value "$d" 2>/dev/null || true)"
+  for d in $("$BB" blkid -t TYPE=vfat -o device 2>/dev/null || true); do
+    lbl="$("$BB" blkid -s LABEL -o value "$d" 2>/dev/null || true)"
     [ "${lbl:-}" = "HP_TOOLS" ] || continue
-    mount_fat_ro "$d" "$TOOLS_MOUNT" || { umount "$TOOLS_MOUNT" 2>/dev/null || true; continue; }
+    mount_fat_ro "$d" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; continue; }
     TOOLS_DEV="$d"; break
   done
 fi
@@ -227,18 +257,18 @@ fi
 # Try explicit device first (if given)
 if [ -n "${ESP_DEV:-}" ]; then
   if ! mount_fat_ro "$ESP_DEV" "$ESP_MOUNT" || [ ! -d "$ESP_MOUNT/EFI" ]; then
-    umount "$ESP_MOUNT" 2>/dev/null || true
+    "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
     ESP_DEV=""
   fi
 fi
 
 # Otherwise, probe: first VFAT with /EFI, excluding HP_TOOLS
 if [ -z "${ESP_DEV:-}" ]; then
-  for d in $(blkid -t TYPE=vfat -o device 2>/dev/null || true); do
+  for d in $("$BB" blkid -t TYPE=vfat -o device 2>/dev/null || true); do
     [ -n "${TOOLS_DEV:-}" ] && [ "$d" = "$TOOLS_DEV" ] && continue
     mount_fat_ro "$d" "$ESP_MOUNT" || continue
     if [ -d "$ESP_MOUNT/EFI" ]; then ESP_DEV="$d"; break; fi
-    umount "$ESP_MOUNT" 2>/dev/null || true
+    "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
   done
 fi
 
@@ -250,28 +280,28 @@ else
 fi
 
 # Brute-force load all initramfs modules
-KVER="$(uname -r)"
-find "/lib/modules/$KVER/" -name '*.ko*' -print0 | xargs -r0 modprobe || true
+KVER="$("$BB" uname -r)"
+"$BB" find "/lib/modules/$KVER/" -name '*.ko*' -print0 | "$BB" xargs -r0 modprobe || true
 
 # ---------- Bind in external modules/firmware from HP_TOOLS ----------
 
 # Modules: bind only if directory appears to contain supplemental assets, ignore otherwise
 MOD_EXT="$TINYOS_DIR/lib/modules/$KVER"
 if [ -d "$MOD_EXT" ] && \
-   busybox find "$MOD_EXT" \
+   "$BB" find "$MOD_EXT" \
      -type f \( -name '*.ko' -o -name '*.ko.*' -o -name 'modules.dep*' -o -name 'modules.*' \) \
-     -print 2>/dev/null | head -n1 >/dev/null; then
-  mkdir -p "/lib/modules/$KVER"
-  mountpoint -q "/lib/modules/$KVER" || mount --bind "$MOD_EXT" "/lib/modules/$KVER" 2>/dev/null || true
+     -print 2>/dev/null | "$BB" head -n1 >/dev/null; then
+  "$BB" mkdir -p "/lib/modules/$KVER"
+  "$BB" mountpoint -q "/lib/modules/$KVER" || "$BB" mount --bind "$MOD_EXT" "/lib/modules/$KVER" 2>/dev/null || true
 fi
 
 # Firmware: bind (and set runtime search path) only if non-empty and no cmdline override
 FW_EXT="$TINYOS_DIR/lib/firmware"
 if [ -d "$FW_EXT" ] && \
-   busybox find "$FW_EXT" -type f -print 2>/dev/null | head -n1 >/dev/null; then
-  if ! printf '%s' "$CMDLINE" | tr ' ' '\n' | grep -q '^firmware_class.path='; then
-    mkdir -p /lib/firmware
-    mountpoint -q /lib/firmware || mount --bind "$FW_EXT" /lib/firmware 2>/dev/null || true
+   "$BB" find "$FW_EXT" -type f -print 2>/dev/null | "$BB" head -n1 >/dev/null; then
+  if ! printf '%s' "$CMDLINE" | "$BB" tr ' ' '\n' | "$BB" grep -q '^firmware_class.path='; then
+    "$BB" mkdir -p /lib/firmware
+    "$BB" mountpoint -q /lib/firmware || "$BB" mount --bind "$FW_EXT" /lib/firmware 2>/dev/null || true
     set_sysfs "/sys/module/firmware_class/parameters/path" "/lib/firmware" || true
   fi
 fi
@@ -280,13 +310,14 @@ fi
 apply_sysfs_dir "$TINYOS_DIR/sysfs.d"
 
 # Optional niceties (ignore failures)
-modprobe hp_wmi     2>/dev/null || true
-modprobe lis3lv02d  2>/dev/null || true
-modprobe rfkill     2>/dev/null || true
+"$BB" modprobe hp_wmi     2>/dev/null || true
+"$BB" modprobe lis3lv02d  2>/dev/null || true
+"$BB" modprobe rfkill     2>/dev/null || true
 
 log "Dropping to shell (type "\""exit"\"" to resume boot")"
-setsid cttyhack /bin/sh
+"$BB" setsid "$BB" cttyhack "$BB" sh
 
 log "Handing off to BusyBox init (PID stays 1)"
-exec /bin/busybox init
-panic "busybox init failed; dropping to shell"
+link_bb /sbin/init
+exec /sbin/init
+panic "/sbin/init failed; dropping to shell"
