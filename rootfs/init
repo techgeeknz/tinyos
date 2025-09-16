@@ -111,49 +111,44 @@ if [ -e /sbin/mdev ]; then
 fi
 
 # Defaults (can be overridden via /etc/tinyos.conf)
-TOOLS_MOUNT=/boot/hp_tools
-ESP_MOUNT=/boot/efi
-TINYOS_REL="EFI/tinyos"
+export TOOLS_MOUNT=/boot/hp_tools
+export ESP_MOUNT=/boot/efi
+export TINYOS_REL="EFI/tinyos"
 
 # Additional config knobs (optional):
 #   TOOLS_HINT, ESP_HINT   : one of LABEL=…, UUID=…, PARTUUID=…, PARTLABEL=…, or /dev/…
-TOOLS_HINT=""
-ESP_HINT=""
+export TOOLS_HINT=""
+export ESP_HINT=""
 
 # Optional config file: KEY=VALUE only (VALUE is stripped of leading/trailing
-# whitespace, but is otherwise literal).
+# whitespace, but is otherwise literal; blank lines and full-line comments
+# are ignored; whitespace around = is ignored).
 # Sanitize to a temp file that contains only `unset KEY` and `KEY='VALUE'`,
 # then source it.
 if [ -n "$CFG" ] && [ -f "$CFG" ]; then
   log "applying $CFG overrides"
 
   _tmp_conf="/run/tinyos.conf"
-  : >"$_tmp_conf" || true
+  "$BB" awk -f - "$CFG" >"$_tmp_conf" <<'AWK'
+    {
+      # Match key (stripped of whitespace) and entire RHS
+      if match($0, /^[ \t]*([A-Z_][A-Z0-9_]*)[ \t]*=(.*)$/, m) {
+        key = m[1]; val = m[2];
+        # Strip whitespace from RHS
+        gsub(/^[ \t]+|[ \t\r]+$/, "", val);
+        if (val == "") { printf "unset %s\n", key; next }
 
-  # sed: strip CR, comments, trim, drop blanks, normalize spaces, keep only KEY=VALUE
-  "$BB" sed -rn \
-    -e 's/\r$//' \
-    -e '/^[[:space:]]*#/d' \
-    -e '/^[[:space:]]*$/d' \
-    -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
-    -e 's/[[:space:]]*=[[:space:]]*/=/' \
-    -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
-    "$CFG" |
-  "$BB" awk '{
-    # Split at first "="
-    i = index($0, "=");
-    k = substr($0, 1, i-1);
-    v = substr($0, i+1);
-    # Empty value → unset
-    if (v == "") { print "unset " k; next }
-    # Escape single quotes for shell (written via char codes)
-    rep = sprintf("%c\\%c%c", 39, 39, 39); gsub(/\047/, rep, v);
-    # Emit KEY=VALUE (single quoted) safely
-    printf "%s=%c%s%c\n", k, 39, v, 39;
-  }' >"$_tmp_conf"
-  # ensure trailing newline
-  printf '\n' >> "$_tmp_conf"
-  # Source sanitized overrides (only our generated lines)
+        # Quote value for shell; single quote written using character code
+        gsub(/'/, "'\\''", val)
+        printf "export %s='%s'\n", key, val
+      }
+    }
+    END {
+      printf "\n"
+    }
+AWK
+
+  # Source the sanitized config file
   . "$_tmp_conf"
 fi
 
@@ -168,7 +163,7 @@ ESP_MOUNT="${ESP_MOUNT%/}"
 
 # Resolved paths used everywhere else
 # NOTE: keep EFI/ — do NOT strip it.
-TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
+export TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
 
 # Create filesystem mountpoints
 "$BB" mkdir -p "$ESP_MOUNT" "$TOOLS_MOUNT"
@@ -233,7 +228,7 @@ mount_fat_ro() {  # $1:dev $2:mountpoint
 }
 
 # ---------- HP_TOOLS (toolbox partition) ----------
-TOOLS_DEV=""
+export TOOLS_DEV=""
 # Seed from config hint if provided
 if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
   TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
@@ -275,7 +270,7 @@ else
 fi
 
 # ---------- ESP (real EFI System Partition) ----------
-ESP_DEV=""
+export ESP_DEV=""
 for tok in $CMDLINE; do
   case "$tok" in
     esp=*) ESP_DEV="$(resolve_hint "${tok#esp=}")" ;;
