@@ -228,16 +228,17 @@ mount_fat_ro() {  # $1:dev $2:mountpoint
 }
 
 # ---------- HP_TOOLS (toolbox partition) ----------
+log "discovering HP_TOOLS partition"
 export TOOLS_DEV=""
-# Seed from config hint if provided
+for tok in $CMDLINE; do
+  case "$tok" in
+    tinyos.tools=*) TOOLS_HINT="${tok#tinyos.tools=}" ;;
+  esac
+done
+# Seed from config or cmdline hint if provided
 if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
   TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
 fi
-for tok in $CMDLINE; do
-  case "$tok" in
-    hp_tools=*) TOOLS_DEV="$(resolve_hint "${tok#hp_tools=}")" ;;
-  esac
-done
 
 # Try explicit device first (if given)
 if [ -n "${TOOLS_DEV:-}" ]; then
@@ -270,12 +271,17 @@ else
 fi
 
 # ---------- ESP (real EFI System Partition) ----------
+log "discovering ESP"
 export ESP_DEV=""
 for tok in $CMDLINE; do
   case "$tok" in
-    esp=*) ESP_DEV="$(resolve_hint "${tok#esp=}")" ;;
+   tinyos.esp=*) ESP_HINT="${tok#tinyos.esp=}" ;;
   esac
 done
+# Seed from config or cmdline hint if provided
+if [ -z "${ESP_DEV:-}" ] && [ -n "$ESP_HINT" ]; then
+  ESP_DEV="$(resolve_hint "$ESP_HINT" || true)"
+fi
 # Never treat HP_TOOLS as ESP
 if [ -n "${TOOLS_DEV:-}" ] && [ -n "${ESP_DEV:-}" ] && [ "$ESP_DEV" = "$TOOLS_DEV" ]; then
   ESP_DEV=""
