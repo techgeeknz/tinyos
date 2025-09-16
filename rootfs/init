@@ -70,18 +70,6 @@ if [ "$QUIET" -eq 0 ] && [ "$VERBOSE" -eq 0 ]; then
   echo 3 4 1 3 > /proc/sys/kernel/printk 2>/dev/null || true
 fi
 
-# Enforce a unified /bin ( /sbin -> /bin preferred, but /bin -> /sbin okay)
-[ -d /sbin ] || { [ ! -e /sbin ] || "$BB" rm -f /sbin; "$BB" ln -snf /bin /sbin; }
-if [ "$("$BB" realpath /bin)" != "$("$BB" realpath /sbin)" ]; then
-  log "unifying /sbin -> /bin"
-  "$BB" mkdir -p /tbin
-  "$BB" mv -ft /tbin /sbin/* /sbin/.[!.]* /sbin/..?* || true
-  "$BB" mv -ft /tbin /bin/*  /bin/.[!.]*  /bin/..?*  || true
-  "$BB" rm -rf /bin /sbin
-  "$BB" mv -f  /tbin /bin
-  "$BB" ln -snf /bin /sbin
-fi
-
 # finish setting up essential FSH directories
 "$BB" rm -rf /tmp /mnt || true
 "$BB" mkdir -p /tmp /mnt /run/lock /run/log || true
@@ -102,6 +90,17 @@ log "install busybox"
 "$BB" mv -nt /bin /tbin/* /tbin/.[!.]* /tbin/..?* || true
 "$BB" rm -rf /tbin
 
+# Enforce a unified /bin ( /sbin -> /bin preferred, but /bin -> /sbin okay)
+[ -d /sbin ] || { [ ! -e /sbin ] || "$BB" rm -f /sbin; "$BB" ln -snf /bin /sbin; }
+if [ "$("$BB" realpath /bin)" != "$("$BB" realpath /sbin)" ]; then
+  log "unifying /sbin -> /bin"
+  "$BB" mkdir -p /tbin
+  "$BB" mv -ft /tbin /sbin/* /sbin/.[!.]* /sbin/..?* || true
+  "$BB" mv -ft /tbin /bin/*  /bin/.[!.]*  /bin/..?*  || true
+  "$BB" rm -rf /bin /sbin
+  "$BB" mv -f  /tbin /bin
+  "$BB" ln -snf /bin /sbin
+fi
 
 # Bring up mdev for /dev population and hotplug handling
 if [ -e /sbin/mdev ]; then
