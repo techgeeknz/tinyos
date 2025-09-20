@@ -13,7 +13,6 @@
 #     --tinyos-conf   PATH            # default: ./config/tinyos.conf
 #     [--tools-mount  PATH]           # e.g. /boot/hp_tools (absolute, normalized)
 #     [--tinyos-rel   RELPATH]        # e.g. EFI/tinyos (no leading slash)
-#     [--bootdir      PATH]           # if set, reconciles tools-mount/tinyos-rel from this
 #     [--install-name FILENAME]
 #     [--esp-mount    PATH]           # optional; auto-detected if not supplied
 #   Env:
@@ -30,7 +29,6 @@ Usage: tinyos-conf.sh [OPTIONS]
   --tinyos-conf   PATH         Path to config file (default: ./config/tinyos.conf)
   --tools-mount   PATH         Absolute mount for HP_TOOLS (e.g. /boot/hp_tools)
   --tinyos-rel    RELPATH      Relative path under tools mount (e.g. EFI/tinyos)
-  --bootdir       PATH         If set, reconciles tools-mount/tinyos-rel from PATH
   --install-name  FILENAME     Output EFI app name (e.g. tinyos.efi)
   --esp-mount     PATH         Explicit ESP mount (absolute); otherwise auto-detect
   -v|--verbose                 Verbose logging
@@ -52,7 +50,6 @@ needval() {
 TINYOS_CONF="${PWD}/config/tinyos.conf"
 TOOLS_MOUNT_IN=""
 TINYOS_REL=""
-BOOTDIR=""
 INSTALL_NAME=""
 ESP_MOUNT_IN=""
 
@@ -63,7 +60,6 @@ while [ $# -gt 0 ]; do
     --tinyos-conf)     needval "$1" "${2-}"; TINYOS_CONF="$2"; shift 2;;
     --tools-mount)     needval "$1" "${2-}"; TOOLS_MOUNT_IN="$2"; shift 2;;
     --tinyos-rel)      needval "$1" "${2-}"; TINYOS_REL="$2"; shift 2;;
-    --bootdir)         needval "$1" "${2-}"; BOOTDIR="$2"; shift 2;;
     --install-name)    needval "$1" "${2-}"; INSTALL_NAME="$2"; shift 2;;
     --esp-mount)       needval "$1" "${2-}"; ESP_MOUNT_IN="$2"; shift 2;;
     --) shift; break;;
@@ -80,7 +76,6 @@ ESP_MOUNT="${ESP_MOUNT:-/boot/esp}"
 TOOLS_MOUNT="${TOOLS_MOUNT%/}"
 TINYOS_REL="${TINYOS_REL#/}"
 TINYOS_REL="${TINYOS_REL%/}"
-BOOTDIR="${BOOTDIR%/}"
 [ -n "$INSTALL_NAME" ] && INSTALL_NAME="$(basename -- "$INSTALL_NAME")" || true
 
 case "$TOOLS_MOUNT" in
@@ -94,26 +89,10 @@ if [ -n "$ESP_MOUNT_IN" ]; then
   esac
 fi
 
-# Reconcile from BOOTDIR if provided or implied inconsistent
-if [ -n "$BOOTDIR" ] && [ "${TOOLS_MOUNT}/${TINYOS_REL}" != "$BOOTDIR" ]; then
-  case "$BOOTDIR" in
-    */EFI/*)
-      TOOLS_MOUNT="${BOOTDIR%%/EFI/*}"
-      TINYOS_REL="${BOOTDIR#${TOOLS_MOUNT}/}"
-      ;;
-    *)
-      TOOLS_MOUNT="$BOOTDIR"
-      TINYOS_REL="EFI/tinyos"
-      ;;
-  esac
-fi
-
 # Re-normalize and validate
 TINYOS_REL="${TINYOS_REL#/}"
 TINYOS_REL="${TINYOS_REL%/}"
 case "$TINYOS_REL" in *..*) die "TINYOS_REL must not contain '..'";; esac
-
-
 
 mkdir -p "$(dirname "$TINYOS_CONF")"
 tmp="${TINYOS_CONF}.tmp.$$"

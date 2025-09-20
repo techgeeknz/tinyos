@@ -103,11 +103,6 @@ TINYOS_REL        := $(call strip_ws,$(TINYOS_REL))
 ESP_MOUNT         := $(call strip_ws,$(ESP_MOUNT))
 INSTALL_NAME      := $(call strip_ws,$(INSTALL_NAME))
 
-# BOOTDIR may be overridden on the command line; otherwise derive from tinyos.conf
-BOOTDIR           ?= $(TOOLS_MOUNT)/$(TINYOS_REL)
-# Normalize BOOTDIR (strip whitespace then trailing '/')
-BOOTDIR           := $(call drop_trailing_slash,$(call strip_ws,$(BOOTDIR)))
-
 EFI_IMAGE          = $(PAYLOAD_DIR)/$(INSTALL_NAME)
 
 # Fix path forms
@@ -190,7 +185,7 @@ help:
 	@echo "  staging-prep      - prepare to run staging, but do not actually run it"
 	@echo "  staging           - run rootfs DAG → $(INITRAMFS) and $(EFI_IMAGE); writes/merges tinyos.conf"
 	@echo "  write-tinyos-conf - merge updated boot path into tinyos.conf"
-	@echo "  install           - **read-only**; uses tinyos.conf BOOTDIR, verifies EFI by content, then rsync"
+	@echo "  install           - **read-only**; uses tinyos.conf TOOLS_MOUNT/TINYOS_REL, verifies EFI by content, then rsync"
 	@echo "                      (backs up existing EFI apps; writes $(INSTALL_MANIFEST) of desired contents)"
 	@echo "  linux-pull        - shallow clone/pull kernel tree (auto-clone if missing)"
 	@echo "  busybox-pull      - shallow clone/pull busybox tree (auto-clone if missing)"
@@ -232,7 +227,6 @@ help-dag:
 	@echo "  TINYOS_CONF = $(TINYOS_CONF)"
 	@echo "  TOOLS_MOUNT = $(TOOLS_MOUNT)"
 	@echo "  TINYOS_REL  = $(TINYOS_REL)"
-	@echo "  BOOTDIR     = $(BOOTDIR)"
 
 # ===================== Kernel =====================
 linux: $(BZIMAGE)
@@ -333,7 +327,6 @@ write-tinyos-conf:
 	  --tinyos-conf  "$(call strip_ws,$(TINYOS_CONF))" \
 	  --tools-mount  "$(call strip_ws,$(TOOLS_MOUNT))" \
 	  --tinyos-rel   "$(call strip_ws,$(TINYOS_REL))" \
-	  --bootdir      "$(call strip_ws,$(BOOTDIR))" \
 	  --install-name "$(call strip_ws,$(INSTALL_NAME))" \
 	  $(if $(ESP_MOUNT),--esp-mount "$(call strip_ws,$(ESP_MOUNT))") \
 	  $(if $(V),--verbose)
@@ -463,7 +456,6 @@ list:
 	echo "TOOLS_MOUNT=$(TOOLS_MOUNT)"; \
 	echo "TINYOS_REL=$(TINYOS_REL)"; \
 	echo "ESP_MOUNT=$(ESP_MOUNT)"; \
-	echo "BOOTDIR=$(BOOTDIR)"; \
 	echo "INSTALL_NAME=$(INSTALL_NAME)"; \
 	echo "FIRMWARE_SRC=$(FIRMWARE_SRC)"; \
 	echo "RAMFS_MAX_BYTES=$(RAMFS_MAX_BYTES)"; \
