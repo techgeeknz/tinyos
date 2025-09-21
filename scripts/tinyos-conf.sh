@@ -80,6 +80,7 @@ while [ $# -gt 0 ]; do
     *) die "unknown arg: $1";;
   esac
 done
+[ -n "$ACTION" ] || die "action (--update or --delete) is required"
 
 [ -n "$TINYOS_CONF" ] || die "--tinyos-conf PATH is required"
 
@@ -119,22 +120,76 @@ case "$ACTION" in
   *) usage;;
 esac
 
-[ "$ACTION" == "update" ] || die "unimplemented action: $ACTION"
+# Pick input: existing file or /dev/null (same code path either way)
+infile="/dev/null"
+[ -f "$TINYOS_CONF" ] && infile="$TINYOS_CONF"
 
-mkdir -p "$(dirname "$TINYOS_CONF")"
-tmp="${TINYOS_CONF}.tmp.$$"; trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
+# Canonicalize for change detection (ignore full-line comments/blank lines).
+# Keep only KEY=VALUE assignments and normalize spaces around '='.
+normalize_assignments() {
+  # Notes:
+  #  • drop CR
+  #  • trim leading/trailing space
+  #  • normalize spaces around "="
+  #  • keep only KEY=VALUE lines
+  sed -rn \
+    -e 's/\r$//' \
+    -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
+    -e 's/[[:space:]]*=[[:space:]]*/=/' \
+    -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
+    "$1"
+}
 
-log "Writing normalized config → $TINYOS_CONF"
+# Query keys, output KEY=VALUE lines for each matching key.
+# For a single key only: output just the value, fail on missing key.
+action_query() {
+  if   [ ${#QKEYS[@]} -eq 0 ]; then
+    normalize_assignments "$infile"
+  elif [ ${#QKEYS[@]} -eq 1 ]; then
+    normalize_assignments "$infile" | awk \
+      -v qstr="${QKEYS[0]}" '
+      {
+        if (! match($0, /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) next;
+        if (kv[1] == qstr) {
+          printf "%s\n", kv[2];
+          exit 0;
+        }
+      }
+      END{
+        # Single key not found
+        exit 1
+      }
+    '
+  else
+    normalize_assignments "$infile" | awk \
+      -v qstr="$(printf '%s\n' "${QKEYS[@]}")" '
+      BEGIN{
+        n = split(qstr, qraw, "\n"); for (i=1; i<=n; i++) {
+          if (match(qraw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) keys[k[1]]=1;
+        }
+      }
+      {
+        if (! match($0, /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) next;
+        k=kv[1]; v=kv[2];
+        if (k in keys) {
+          printf "%s=%s\n", k, v;
+          next;
+        }
+      }
+    '
+  fi
+}
+
 # Overwrite managed keys in place, preserving:
 #  • line order
 #  • leading whitespace
 #  • original spacing around '='
 # If a managed key is missing, append it at end.
-# Values may be quoted to preserve leading/trailing spaces.
+action_update() {
+log "Updating config → $TINYOS_CONF"
 
-# Pick input: existing file or /dev/null (same code path either way)
-infile="/dev/null"
-[ -f "$TINYOS_CONF" ] && infile="$TINYOS_CONF"
+mkdir -p "$(dirname "$TINYOS_CONF")"
+tmp="${TINYOS_CONF}.tmp.$$"; trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
 
 # AWK does the in-place managed-key rewrite while preserving formatting of
 # unmanaged lines and spacing around '=' on managed lines.
@@ -188,26 +243,6 @@ awk \
   }
   ' "$infile" >"$tmp"
 
-
-# Canonicalize for change detection (ignore full-line comments/blank lines).
-# Keep only KEY=VALUE assignments and normalize spaces around '='.
-normalize_assignments() {
-  # Notes:
-  #  • drop CR
-  #  • strip whole line comments
-  #  • trim leading/trailing space
-  #  • normalize spaces around "="
-  #  • keep only KEY=VALUE lines
-  sed -rn \
-    -e 's/\r$//' \
-    -e '/^[[:space:]]*#/d' \
-    -e '/^[[:space:]]*$/d' \
-    -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
-    -e 's/[[:space:]]*=[[:space:]]*/=/' \
-    -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
-    "$1"
-}
-
 # Only replace the file if the normalized content differs
 if [ -f "$TINYOS_CONF" ]; then
   if cmp -s \
@@ -219,3 +254,10 @@ if [ -f "$TINYOS_CONF" ]; then
   fi
 fi
 mv -f "$tmp" "$TINYOS_CONF"
+}
+
+case "$ACTION" in
+  query)   action_query;;
+  update)  action_update;;
+  *)       die "unimplemented action: $ACTION"
+esac
