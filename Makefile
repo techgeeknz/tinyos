@@ -324,11 +324,12 @@ staging: write-tinyos-conf $(BZIMAGE) linux-headers linux-modules-install $(BUSY
 
 write-tinyos-conf:
 	@$(UPDATE_TINYOS_CONF) \
+	  --update \
 	  --tinyos-conf  "$(call strip_ws,$(TINYOS_CONF))" \
-	  --tools-mount  "$(call strip_ws,$(TOOLS_MOUNT))" \
-	  --tinyos-rel   "$(call strip_ws,$(TINYOS_REL))" \
-	  --install-name "$(call strip_ws,$(INSTALL_NAME))" \
-	  $(if $(ESP_MOUNT),--esp-mount "$(call strip_ws,$(ESP_MOUNT))") \
+	  TOOLS_MOUNT="$(TOOLS_MOUNT)" \
+	  TINYOS_REL="$(TINYOS_REL)" \
+	  INSTALL_NAME="$(INSTALL_NAME)" \
+	  $(if $(ESP_MOUNT),ESP_MOUNT="$(ESP_MOUNT)") \
 	  $(if $(V),--verbose)
 	@# Keep the parse-time include in sync within the same invocation.
 	@echo "==> refresh .tinyos.mk"

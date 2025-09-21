@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tinyos-conf.sh — normalize & merge tinyos.conf
+# tinyos-conf.sh — query, normalize & merge tinyos.conf
+#
 # Grammar (simplified):
 #   • Each non-blank line is EITHER a full-line comment or an assignment.
 #   • Comments:      ^\s*#.*$
@@ -10,13 +11,32 @@
 #
 # Usage:
 #   tinyos-conf.sh \
-#     --tinyos-conf   PATH            # default: ./config/tinyos.conf
-#     [--tools-mount  PATH]           # e.g. /boot/hp_tools (absolute, normalized)
-#     [--tinyos-rel   RELPATH]        # e.g. EFI/tinyos (no leading slash)
-#     [--install-name FILENAME]
-#     [--esp-mount    PATH]           # optional; auto-detected if not supplied
-#   Env:
-#     VERBOSE=0|1   - logs when >0
+#     --tinyos-conf PATH \
+#     --query [KEY]...
+#
+#     Query configuration values.
+#       - With no KEYs, outputs all KEY=VALUE pairs.
+#       - With one KEY, outputs just VALUE (error if missing).
+#       - With multiple KEYs, outputs KEY=VALUE lines.
+#
+#   tinyos-conf.sh \
+#     --tinyos-conf PATH \
+#     --update [KEY=VALUE]... \
+#     [--unset KEY]... \
+#     [--delete KEY]...
+#
+#     Update configuration values.
+#       - KEY=VALUE sets or updates KEY.
+#       - --unset KEY writes KEY with an empty value (KEY=).
+#       - --delete KEY removes KEY from the file entirely.
+#
+# Options:
+#   -v|--verbose   Verbose logging to stderr
+#   -h|--help      Show this help and exit
+#
+# Notes:
+#   • Missing file is treated as empty (/dev/null is used)
+#   • Updates rewrite the file normalized and idempotent
 
 set -euo pipefail
 
@@ -25,17 +45,17 @@ die(){ echo "[tinyos-conf] ERROR: $*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'EOF'
-Usage: tinyos-conf.sh [OPTIONS]
-  --tinyos-conf   PATH         Path to config file (default: ./config/tinyos.conf)
-  --tools-mount   PATH         Absolute mount for HP_TOOLS (e.g. /boot/hp_tools)
-  --tinyos-rel    RELPATH      Relative path under tools mount (e.g. EFI/tinyos)
-  --install-name  FILENAME     Output EFI app name (e.g. tinyos.efi)
-  --esp-mount     PATH         Explicit ESP mount (absolute); otherwise auto-detect
+Usage:
+  tinyos-conf.sh --tinyos-conf PATH --query [KEY]...
+  tinyos-conf.sh --tinyos-conf PATH --update [KEY=VALUE]... [--unset KEY]... [--delete KEY]...
+
+Options:
   -v|--verbose                 Verbose logging
   -h|--help                    Show this help
+
 Notes:
-  * Only --opt VALUE form is accepted (no --opt=value).
-  * File is only rewritten if managed keys actually change.
+  • Missing file is treated as empty (read /dev/null)
+  • Writes are normalized and idempotent
 EOF
   exit 2
 }
@@ -46,56 +66,63 @@ needval() {
   [ -n "$next" ] && [ "${next#-}" != "$next" ] && die "missing value for $opt (got '$next')"
   [ -n "$next" ] || die "missing value for $opt"
 }
+is_key(){ [[ "$1" =~ ^[A-Z_][A-Z0-9_]*$ ]]; }
 
-TINYOS_CONF="${PWD}/config/tinyos.conf"
-TOOLS_MOUNT_IN=""
-TINYOS_REL=""
-INSTALL_NAME=""
-ESP_MOUNT_IN=""
+declare -a SETS=() DELS=() QKEYS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)         usage;;
     -v|--verbose)      VERBOSE=1; shift;;
     --tinyos-conf)     needval "$1" "${2-}"; TINYOS_CONF="$2"; shift 2;;
-    --tools-mount)     needval "$1" "${2-}"; TOOLS_MOUNT_IN="$2"; shift 2;;
-    --tinyos-rel)      needval "$1" "${2-}"; TINYOS_REL="$2"; shift 2;;
-    --install-name)    needval "$1" "${2-}"; INSTALL_NAME="$2"; shift 2;;
-    --esp-mount)       needval "$1" "${2-}"; ESP_MOUNT_IN="$2"; shift 2;;
-    --) shift; break;;
+    --query)           ACTION=query; shift; break;;
+    --update)          ACTION=update; shift; break;;
     *) die "unknown arg: $1";;
   esac
 done
 
-# Defaults if not provided (match Makefile defaults)
-TOOLS_MOUNT="${TOOLS_MOUNT:-/boot/hp_tools}"
-TINYOS_REL="${TINYOS_REL:-EFI/tinyos}"
-ESP_MOUNT="${ESP_MOUNT:-/boot/esp}"
+[ -n "$TINYOS_CONF" ] || die "--tinyos-conf PATH is required"
 
-# Normalize
-TOOLS_MOUNT="${TOOLS_MOUNT%/}"
-TINYOS_REL="${TINYOS_REL#/}"
-TINYOS_REL="${TINYOS_REL%/}"
-[ -n "$INSTALL_NAME" ] && INSTALL_NAME="$(basename -- "$INSTALL_NAME")" || true
-
-case "$TOOLS_MOUNT" in
-  /*) : ;;
-  *) die "TOOLS_MOUNT must be absolute (got '$TOOLS_MOUNT')" ;;
+case "$ACTION" in
+  query)
+    # parse remaining tokens as keys
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -v|--verbose) VERBOSE=1; shift;;
+        -h|--help)    usage;;
+        [A-Z_]*)      is_key "$1" || die "invalid key: $1"
+                      QKEYS+=("$1")
+                      shift;;
+        *) die "unexpected query arg: $1";;
+      esac
+    done
+    ;;
+  update)
+    # parse KEY=VALUE / --unset KEY / --delete KEY
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -v|--verbose) VERBOSE=1; shift;;
+        -h|--help)    usage;;
+        --unset)      needval "$1" "${2-}"
+                      is_key "$2" || die "invalid key: $2"
+                      SETS+=("$2=")
+                      shift 2;;
+        --delete)     needval "$1" "${2-}"
+                      is_key "$2" || die "invalid key: $2"
+                      DELS+=("$2")
+                      shift 2;;
+        [A-Z_]*=*)    key="${1%%=*}"; is_key "$key" || die "invalid key: $key"; SETS+=("$1"); shift;;
+        *) die "unexpected update arg: $1";;
+      esac
+    done
+    ;;
+  *) usage;;
 esac
-if [ -n "$ESP_MOUNT_IN" ]; then
-  case "$ESP_MOUNT_IN" in
-    /*) : ;;
-    *) die "ESP_MOUNT must be absolute (got '$ESP_MOUNT_IN')" ;;
-  esac
-fi
 
-# Re-normalize and validate
-TINYOS_REL="${TINYOS_REL#/}"
-TINYOS_REL="${TINYOS_REL%/}"
-case "$TINYOS_REL" in *..*) die "TINYOS_REL must not contain '..'";; esac
+[ "$ACTION" == "update" ] || die "unimplemented action: $ACTION"
 
 mkdir -p "$(dirname "$TINYOS_CONF")"
-tmp="${TINYOS_CONF}.tmp.$$"
+tmp="${TINYOS_CONF}.tmp.$$"; trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
 
 log "Writing normalized config → $TINYOS_CONF"
 # Overwrite managed keys in place, preserving:
@@ -113,10 +140,8 @@ infile="/dev/null"
 # unmanaged lines and spacing around '=' on managed lines.
 # Trimming of provided values happens *inside* AWK.
 awk \
-  -v v_TOOLS_MOUNT="$TOOLS_MOUNT" \
-  -v v_TINYOS_REL="$TINYOS_REL" \
-  -v v_ESP_MOUNT="$ESP_MOUNT" \
-  -v v_INSTALL_NAME="$INSTALL_NAME" '
+  -v sstr="$(printf '%s\n' "${SETS[@]}")" \
+  -v dstr="$(printf '%s\n' "${DELS[@]}")" '
 
   # Trim leading and trailing spaces
   function trim(s,   t) {
@@ -126,10 +151,12 @@ awk \
     return t
   }
   BEGIN {
-    if (length(v_TOOLS_MOUNT))  managed["TOOLS_MOUNT"]  = trim(v_TOOLS_MOUNT)
-    if (length(v_TINYOS_REL))   managed["TINYOS_REL"]   = trim(v_TINYOS_REL)
-    if (length(v_ESP_MOUNT))    managed["ESP_MOUNT"]    = trim(v_ESP_MOUNT)
-    if (length(v_INSTALL_NAME)) managed["INSTALL_NAME"] = trim(v_INSTALL_NAME)
+    n = split(sstr, sraw, "\n"); for (i=1; i<=n; i++) {
+      if (match(sraw[i], /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) sets[kv[1]]=kv[2];
+    }
+    n = split(dstr, draw, "\n"); for (i=1; i<=n; i++) {
+      if (match(draw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) dels[k[1]]=1;
+    }
   }
   # Parse: ^(lead)(KEY)(ws1)=(ws2)(VALUE)(ws3)$  (no inline comments)
   # We keep lead, ws1, ws2 exactly as-is.
@@ -137,8 +164,9 @@ awk \
     line=$0
     if (match(line, /^([[:space:]]*)([A-Z_][A-Z0-9_]*)([[:space:]]*)=([[:space:]]*).*$/, m)) {
       key = m[2]
-      if (key in managed) {
-        val = managed[key]
+      if (key in dels) next;
+      if (key in sets) {
+        val = trim(sets[key])
         # Preserve formatting: m[1] key m[3] "=" m[4] value
         out = m[1] key m[3] "=" m[4] val
         print out
@@ -151,9 +179,9 @@ awk \
   }
   END{
     # Append any missing managed keys
-    for (k in managed) {
+    for (k in sets) {
       if (!seen[k]) {
-        v = managed[k]
+        v = trim(sets[k])
         print k "=" v
       }
     }
