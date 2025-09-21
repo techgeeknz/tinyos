@@ -112,7 +112,10 @@ case "$ACTION" in
                       is_key "$2" || die "invalid key: $2"
                       DELS+=("$2")
                       shift 2;;
-        [A-Z_]*=*)    key="${1%%=*}"; is_key "$key" || die "invalid key: $key"; SETS+=("$1"); shift;;
+        [A-Z_]*=*)    key="${1%%=*}"
+                      is_key "$key" || die "invalid key: $key"
+                      SETS+=("$1")
+                      shift;;
         *) die "unexpected update arg: $1";;
       esac
     done
@@ -186,74 +189,74 @@ action_query() {
 #  • original spacing around '='
 # If a managed key is missing, append it at end.
 action_update() {
-log "Updating config → $TINYOS_CONF"
+  log "Updating config → $TINYOS_CONF"
 
-mkdir -p "$(dirname "$TINYOS_CONF")"
-tmp="${TINYOS_CONF}.tmp.$$"; trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
+  mkdir -p "$(dirname "$TINYOS_CONF")"
+  tmp="${TINYOS_CONF}.tmp.$$"; trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
 
-# AWK does the in-place managed-key rewrite while preserving formatting of
-# unmanaged lines and spacing around '=' on managed lines.
-# Trimming of provided values happens *inside* AWK.
-awk \
-  -v sstr="$(printf '%s\n' "${SETS[@]}")" \
-  -v dstr="$(printf '%s\n' "${DELS[@]}")" '
+  # AWK does the in-place managed-key rewrite while preserving formatting of
+  # unmanaged lines and spacing around '=' on managed lines.
+  # Trimming of provided values happens *inside* AWK.
+  awk \
+    -v sstr="$(printf '%s\n' "${SETS[@]}")" \
+    -v dstr="$(printf '%s\n' "${DELS[@]}")" '
 
-  # Trim leading and trailing spaces
-  function trim(s,   t) {
-    t = s
-    sub(/^[[:space:]]+/, "", t)
-    sub(/[[:space:]]+$/, "", t)
-    return t
-  }
-  BEGIN {
-    n = split(sstr, sraw, "\n"); for (i=1; i<=n; i++) {
-      if (match(sraw[i], /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) sets[kv[1]]=kv[2];
+    # Trim leading and trailing spaces
+    function trim(s,   t) {
+      t = s
+      sub(/^[[:space:]]+/, "", t)
+      sub(/[[:space:]]+$/, "", t)
+      return t
     }
-    n = split(dstr, draw, "\n"); for (i=1; i<=n; i++) {
-      if (match(draw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) dels[k[1]]=1;
-    }
-  }
-  # Parse: ^(lead)(KEY)(ws1)=(ws2)(VALUE)(ws3)$  (no inline comments)
-  # We keep lead, ws1, ws2 exactly as-is.
-  {
-    line=$0
-    if (match(line, /^([[:space:]]*)([A-Z_][A-Z0-9_]*)([[:space:]]*)=([[:space:]]*).*$/, m)) {
-      key = m[2]
-      if (key in dels) next;
-      if (key in sets) {
-        val = trim(sets[key])
-        # Preserve formatting: m[1] key m[3] "=" m[4] value
-        out = m[1] key m[3] "=" m[4] val
-        print out
-        seen[key]=1
-        next
+    BEGIN {
+      n = split(sstr, sraw, "\n"); for (i=1; i<=n; i++) {
+        if (match(sraw[i], /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) sets[kv[1]]=kv[2];
+      }
+      n = split(dstr, draw, "\n"); for (i=1; i<=n; i++) {
+        if (match(draw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) dels[k[1]]=1;
       }
     }
-    # Unmanaged or non-assignments: pass through
-    print line
-  }
-  END{
-    # Append any missing managed keys
-    for (k in sets) {
-      if (!seen[k]) {
-        v = trim(sets[k])
-        print k "=" v
+    # Parse: ^(lead)(KEY)(ws1)=(ws2)(VALUE)(ws3)$  (no inline comments)
+    # We keep lead, ws1, ws2 exactly as-is.
+    {
+      line=$0
+      if (match(line, /^([[:space:]]*)([A-Z_][A-Z0-9_]*)([[:space:]]*)=([[:space:]]*).*$/, m)) {
+        key = m[2]
+        if (key in dels) next;
+        if (key in sets) {
+          val = trim(sets[key])
+          # Preserve formatting: m[1] key m[3] "=" m[4] value
+          out = m[1] key m[3] "=" m[4] val
+          print out
+          seen[key]=1
+          next
+        }
+      }
+      # Unmanaged or non-assignments: pass through
+      print line
+    }
+    END{
+      # Append any missing managed keys
+      for (k in sets) {
+        if (!seen[k]) {
+          v = trim(sets[k])
+          print k "=" v
+        }
       }
     }
-  }
   ' "$infile" >"$tmp"
 
-# Only replace the file if the normalized content differs
-if [ -f "$TINYOS_CONF" ]; then
-  if cmp -s \
-      <(normalize_assignments "$tmp" | sort -u) \
-      <(normalize_assignments "$TINYOS_CONF" | sort -u); then
-    rm -f "$tmp"
-    log "No change to $TINYOS_CONF"
-    exit 0
+  # Only replace the file if the normalized content differs
+  if [ -f "$TINYOS_CONF" ]; then
+    if cmp -s \
+        <(normalize_assignments "$tmp" | sort -u) \
+        <(normalize_assignments "$TINYOS_CONF" | sort -u); then
+      rm -f "$tmp"
+      log "No change to $TINYOS_CONF"
+      exit 0
+    fi
   fi
-fi
-mv -f "$tmp" "$TINYOS_CONF"
+  mv -f "$tmp" "$TINYOS_CONF"
 }
 
 case "$ACTION" in
