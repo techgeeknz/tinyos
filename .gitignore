@@ -13,5 +13,4 @@ config/.tinyos.mk
 *.tar.gz
 *.tar.zst
 *.zip
-
 *.kate-swp
