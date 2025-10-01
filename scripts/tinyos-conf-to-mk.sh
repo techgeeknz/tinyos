@@ -10,6 +10,10 @@
 #   • Empty values are ignored (don’t override Make’s defaults with empty)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TINYOS_CONF_SH="$SCRIPT_DIR/tinyos-conf.sh"
+
 usage() {
   cat <<'EOF'
 Usage: tinyos-conf-to-mk.sh --in <tinyos.conf> --out <sanitized.mk>
@@ -33,36 +37,15 @@ done
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-# Using same sed/awk lexer as rootfs/init (KEY=VALUE; optional paired double-quotes),
-# canonicalize tinyos.conf (ignore full-line comments/blank lines).
-# Keep only KEY=VALUE assignments and normalize spaces around '='.
 
-# Notes:
-#  • drop CR
-#  • strip whole line comments
-#  • trim leading/trailing space
-#  • normalize spaces around "="
-#  • keep only KEY=VALUE lines
-sed -rn \
-  -e 's/\r$//' \
-  -e '/^[[:space:]]*#/d' \
-  -e '/^[[:space:]]*$/d' \
-  -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
-  -e 's/[[:space:]]*=[[:space:]]*/=/' \
-  -e '/^[A-Z_][A-Z0-9_]*=.*/p' \
-  "$IN" |
+"$TINYOS_CONF_SH" --tinyos-conf "$IN" --query |
 awk '
 # Top-level helper: double all dollars so Make sees them literally
 function make_dollar_escape(s) { gsub(/\$/,"$$",s); return s }
 
 {
   # Guaranteed KEY=VALUE by sed; split at first "="
-  i = index($0, "=")
-  k = substr($0, 1, i-1)
-  v = substr($0, i+1)
-
-  # Trim leading/trailing spaces in VALUE (keep interior spaces)
-  sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+  i = index($0, "="); k = substr($0, 1, i-1); v = substr($0, i+1)
   if (v == "") next  # preserve defaults
 
   # Escape dollar signs
