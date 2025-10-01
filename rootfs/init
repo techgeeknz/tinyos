@@ -128,17 +128,17 @@ export ESP_HINT=""
 if [ -n "$CFG" ] && [ -f "$CFG" ]; then
   log "applying $CFG overrides"
 
-  _tmp_conf="/run/tinyos.conf"
-  "$BB" awk -f - "$CFG" >"$_tmp_conf" <<'AWK'
+  _TMP_CONF="/run/tinyos.conf"
+  "$BB" awk -f - "$CFG" >"$_TMP_CONF" <<'AWK'
     {
       # Match key (stripped of whitespace) and entire RHS
-      if match($0, /^[ \t]*([A-Z_][A-Z0-9_]*)[ \t]*=(.*)$/, m) {
+      if match($0, /^[[:space:]]*([A-Z][A-Z0-9_]*)[[:space:]]*=(.*)$/, m) {
         key = m[1]; val = m[2];
         # Strip whitespace from RHS
-        gsub(/^[ \t]+|[ \t\r]+$/, "", val);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", val);
         if (val == "") { printf "unset %s\n", key; next }
 
-        # Quote value for shell; single quote written using character code
+        # Quote value for shell
         gsub(/'/, "'\\''", val)
         printf "export %s='%s'\n", key, val
       }
@@ -149,7 +149,8 @@ if [ -n "$CFG" ] && [ -f "$CFG" ]; then
 AWK
 
   # Source the sanitized config file
-  . "$_tmp_conf"
+  . "$_TMP_CONF"
+  unset _TMP_CONF
 fi
 
 # Normalize config-derived paths:

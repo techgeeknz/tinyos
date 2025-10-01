@@ -66,7 +66,7 @@ needval() {
   [ -n "$next" ] && [ "${next#-}" != "$next" ] && die "missing value for $opt (got '$next')"
   [ -n "$next" ] || die "missing value for $opt"
 }
-is_key(){ [[ "$1" =~ ^[A-Z_][A-Z0-9_]*$ ]]; }
+is_key(){ [[ "$1" =~ ^[A-Z][A-Z0-9_]*$ ]]; }
 
 declare -a SETS=() DELS=() QKEYS=()
 
@@ -91,7 +91,7 @@ case "$ACTION" in
       case "$1" in
         -v|--verbose) VERBOSE=1; shift;;
         -h|--help)    usage;;
-        [A-Z_]*)      is_key "$1" || die "invalid key: $1"
+        [A-Z]*)       is_key "$1" || die "invalid key: $1"
                       QKEYS+=("$1")
                       shift;;
         *) die "unexpected query arg: $1";;
@@ -112,7 +112,7 @@ case "$ACTION" in
                       is_key "$2" || die "invalid key: $2"
                       DELS+=("$2")
                       shift 2;;
-        [A-Z_]*=*)    key="${1%%=*}"
+        [A-Z]*=*)     key="${1%%=*}"
                       is_key "$key" || die "invalid key: $key"
                       SETS+=("$1")
                       shift;;
@@ -168,11 +168,11 @@ action_query() {
       -v qstr="$(printf '%s\n' "${QKEYS[@]}")" '
       BEGIN{
         n = split(qstr, qraw, "\n"); for (i=1; i<=n; i++) {
-          if (match(qraw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) keys[k[1]]=1;
+          if (match(qraw[i], /^([A-Z][A-Z0-9_]*)$/, k)) keys[k[1]]=1;
         }
       }
       {
-        if (! match($0, /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) next;
+        if (! match($0, /^([A-Z][A-Z0-9_]*)=(.*)$/, kv)) next;
         k=kv[1]; v=kv[2];
         if (k in keys) {
           printf "%s=%s\n", k, v;
@@ -210,17 +210,17 @@ action_update() {
     }
     BEGIN {
       n = split(sstr, sraw, "\n"); for (i=1; i<=n; i++) {
-        if (match(sraw[i], /^([A-Z_][A-Z0-9_]*)=(.*)$/, kv)) sets[kv[1]]=kv[2];
+        if (match(sraw[i], /^([A-Z][A-Z0-9_]*)=(.*)$/, kv)) sets[kv[1]]=kv[2];
       }
       n = split(dstr, draw, "\n"); for (i=1; i<=n; i++) {
-        if (match(draw[i], /^([A-Z_][A-Z0-9_]*)$/, k)) dels[k[1]]=1;
+        if (match(draw[i], /^([A-Z][A-Z0-9_]*)$/, k)) dels[k[1]]=1;
       }
     }
     # Parse: ^(lead)(KEY)(ws1)=(ws2)(VALUE)(ws3)$  (no inline comments)
     # We keep lead, ws1, ws2 exactly as-is.
     {
       line=$0
-      if (match(line, /^([[:space:]]*)([A-Z_][A-Z0-9_]*)([[:space:]]*)=([[:space:]]*).*$/, m)) {
+      if (match(line, /^([[:space:]]*)([A-Z][A-Z0-9_]*)([[:space:]]*)=([[:space:]]*)/, m)) {
         key = m[2]
         if (key in dels) next;
         if (key in sets) {
