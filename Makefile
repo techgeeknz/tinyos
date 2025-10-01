@@ -2,7 +2,7 @@
 # - BusyBox + initramfs + EFI-stub kernel
 # - devtmpfs-only (no mdev) initramfs
 # - rEFInd passes cmdline (we do NOT embed one by default)
-# - All install-time assets live under HP_TOOLS/EFI/tinyos/
+# - All install-time assets live under $(TOOLS_MOUNT)/$(TINYOS_REL)
 #
 # Layout:
 #   ./                  (this Makefile)
@@ -338,7 +338,7 @@ write-tinyos-conf:
 	  --out "$(TINYOS_MK).tmp" && \
 	mv -f "$(TINYOS_MK).tmp" "$(TINYOS_MK)"
 
-# ===================== Install =================================================
+# ===================== Install ======================================
 # Read-only: uses tinyos.conf as source of truth (TOOLS_MOUNT/TINYOS_REL), verifies
 # an actual EFI application exists in payload by content (via file(1) if available),
 # then rsyncs payload into the target directory.
@@ -447,7 +447,7 @@ list:
 	echo "SCRIPTS_DIR=$(SCRIPTS_DIR)"; \
 	echo "STAGE_ROOT=$(STAGE_ROOT)"; \
 	echo "PAYLOAD_DIR=$(PAYLOAD_DIR)"; \
-	echo "STAGE_META_DIR=$(STAGE_META_DIR)" \
+	echo "STAGE_META_DIR=$(STAGE_META_DIR)"; \
 	echo "STAGE_STAMP=$(STAGE_STAMP)"; \
 	echo "INITRAMFS=$(INITRAMFS)"; \
 	echo "EFI_IMAGE=$(EFI_IMAGE)"; \
@@ -458,7 +458,7 @@ list:
 	echo "TINYOS_REL=$(TINYOS_REL)"; \
 	echo "ESP_MOUNT=$(ESP_MOUNT)"; \
 	echo "INSTALL_NAME=$(INSTALL_NAME)"; \
-	echo "FIRMWARE_SRC=$(FIRMWARE_SRC)"; \
+	echo "FW_REPO_DIR=$(FW_REPO_DIR)"; \
 	echo "RAMFS_MAX_BYTES=$(RAMFS_MAX_BYTES)"; \
 	echo "HEAVY_BYTES=$(HEAVY_BYTES)"
 
