@@ -23,7 +23,8 @@ link_bb() {
 _ts()   { "$BB" awk '{printf "[%10.6f]", $1}' /proc/uptime 2>/dev/null ||
           printf "[   .      ]"; }
 msg()   { printf "%s %s %s\n" "$(_ts)" "[init]" "$*" >&2; }
-log()   { [ "${QUIET:-0}" -eq 1 ] || msg "$*"; }
+log()   { { [ "${VERBOSE:0}" -eq 0 ] && [ "${QUIET:-0}" -gt 0 ]; } ||
+          msg "$*"; }
 panic() { msg 'ERROR:' "$*"; exec "$BB" setsid "$BB" cttyhack "$BB" sh; }
 trap 'rc=$?; [ $rc -eq 0 ] || panic "init exited with status $rc";' EXIT
 
@@ -33,22 +34,23 @@ mnt_pfs() { "$BB" mount -t "$1" "$2" "$3" || panic "mnt_pfs: mount $3 failed"; }
 mnt_pfs proc     proc     /proc
 mnt_pfs sysfs    sysfs    /sys
 mnt_pfs devtmpfs devtmpfs /dev
-"$BB" rm -rf /run || true; "$BB" mkdir -p /run || true
+"$BB" rm -rf /run 2>/dev/null || true; "$BB" mkdir -p /run || true
 if "$BB" ln -snf /proc/$$/exe /run/busybox; then
   BB=/run/busybox
 fi
 
 # --- Kernel cmdline (for feature toggles) ---
 CFG=/etc/tinyos.conf
+_CMD_TOOLS_HINT=
+_CMD_ESP_HINT=
 CMDLINE="$("$BB" cat /proc/cmdline 2>/dev/null || true)"
 
 for tok in $CMDLINE; do
   case "$tok" in
     quiet|tinyos.quiet)
-      export QUIET=1
-      ;;
+      export QUIET=1 ;;
     tinyos.debug|tinyos.trace)
-      export VERBOSE=1
+      export VERBOSE=1 QUIET=0
       # Pretty xtrace with kernel-like timestamp + line number
       export PS4='+$(_ts) ${LINENO}: '
       set -eux  # enable xtrace too
@@ -58,9 +60,13 @@ for tok in $CMDLINE; do
       ;;
     tinyos.noconf)
       # Disable tinyos.conf parsing
-      log "$CFG disabled via kernel cmdline"
-      CFG=""
-      ;;
+      CFG="" ;;
+    tinyos.tools=*)
+      # Override hint for TOOLS partition
+      _CMD_TOOLS_HINT="${tok#tinyos.tools=}" ;;
+    tinyos.esp=*)
+      # Override hint for ESP partition
+      _CMD_ESP_HINT="${tok#tinyos.esp=}" ;;
     *) ;;
   esac
 done
@@ -111,7 +117,7 @@ if [ -e /sbin/mdev ]; then
 fi
 
 # Defaults (can be overridden via /etc/tinyos.conf)
-export TOOLS_MOUNT=/boot/hp_tools
+export TOOLS_MOUNT=/boot/tools
 export ESP_MOUNT=/boot/efi
 export TINYOS_REL="EFI/tinyos"
 
@@ -125,8 +131,12 @@ export ESP_HINT=""
 # are ignored; whitespace around = is ignored).
 # Sanitize to a temp file that contains only `unset KEY` and `KEY='VALUE'`,
 # then source it.
-if [ -n "$CFG" ] && [ -f "$CFG" ]; then
-  log "applying $CFG overrides"
+if [ -z "$CFG" ]; then
+  log "skipping config overrides (disabled by commandline)"
+elif ! [ -f "$CFG" ]; then
+  log "skipping config overrides ($CFG file not found)"
+else
+  log "applying config overrides from $CFG"
 
   _TMP_CONF="/run/tinyos.conf"
   "$BB" awk -f - "$CFG" >"$_TMP_CONF" <<'AWK'
@@ -157,10 +167,10 @@ fi
 # - TOOLS_MOUNT: strip trailing /
 # - TINYOS_REL : strip leading and trailing / (keep 'EFI/...', do not make it absolute)
 # - ESP_MOUNT  : strip trailing /
-TOOLS_MOUNT="${TOOLS_MOUNT%/}"
+TOOLS_MOUNT="$("$BB" realpath "${TOOLS_MOUNT%/}")"
 TINYOS_REL="${TINYOS_REL#/}"
 TINYOS_REL="${TINYOS_REL%/}"
-ESP_MOUNT="${ESP_MOUNT%/}"
+ESP_MOUNT="$("$BB" realpath "${ESP_MOUNT%/}")"
 
 # Resolved paths used everywhere else
 # NOTE: keep EFI/ — do NOT strip it.
@@ -231,12 +241,10 @@ mount_fat_ro() {  # $1:dev $2:mountpoint
 # ---------- HP_TOOLS (toolbox partition) ----------
 log "discovering HP_TOOLS partition"
 export TOOLS_DEV=""
-for tok in $CMDLINE; do
-  case "$tok" in
-    tinyos.tools=*) TOOLS_HINT="${tok#tinyos.tools=}" ;;
-  esac
-done
 # Seed from config or cmdline hint if provided
+if [ -n "${_CMD_TOOLS_HINT:-}" ]; then
+  TOOLS_HINT="$_CMD_TOOLS_HINT"
+fi
 if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
   TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
 fi
@@ -274,12 +282,10 @@ fi
 # ---------- ESP (real EFI System Partition) ----------
 log "discovering ESP"
 export ESP_DEV=""
-for tok in $CMDLINE; do
-  case "$tok" in
-   tinyos.esp=*) ESP_HINT="${tok#tinyos.esp=}" ;;
-  esac
-done
 # Seed from config or cmdline hint if provided
+if [ -n "${_CMD_ESP_HINT}" ]; then
+  ESP_HINT="$_CMD_ESP_HINT"
+fi
 if [ -z "${ESP_DEV:-}" ] && [ -n "$ESP_HINT" ]; then
   ESP_DEV="$(resolve_hint "$ESP_HINT" || true)"
 fi
@@ -313,7 +319,7 @@ else
   msg "ESP not found (continuing)"
 fi
 
-# Brute-force load all initramfs modules
+# Brute-force load all initramfs modules (temporary workaround for console)
 KVER="$("$BB" uname -r)"
 "$BB" find "/lib/modules/$KVER/" -name '*.ko*' -print0 | "$BB" xargs -r0 modprobe || true
 
