@@ -231,8 +231,12 @@ action_update() {
           seen[key]=1
           next
         }
+        else {
+          # Non-matching key: pass through
+          print line
+        }
       }
-      # Unmanaged or non-assignments: pass through
+      # Non-assignment: pass through
       print line
     }
     END{
