@@ -122,7 +122,7 @@ export ESP_MOUNT=/boot/efi
 export TINYOS_REL="EFI/tinyos"
 
 # Additional config knobs (optional):
-#   TOOLS_HINT, ESP_HINT   : one of LABEL=…, UUID=…, PARTUUID=…, PARTLABEL=…, or /dev/…
+#   TOOLS_HINT, ESP_HINT   : one of LABEL=…, UUID=…, TYPE=…, or /dev/…
 export TOOLS_HINT=""
 export ESP_HINT=""
 
@@ -133,7 +133,7 @@ export ESP_HINT=""
 # then source it.
 if [ -z "$CFG" ]; then
   log "skipping config overrides (disabled by commandline)"
-elif ! [ -f "$CFG" ]; then
+elif [ ! -f "$CFG" ]; then
   log "skipping config overrides ($CFG file not found)"
 else
   log "applying config overrides from $CFG"
@@ -171,13 +171,6 @@ TOOLS_MOUNT="$("$BB" realpath "${TOOLS_MOUNT%/}")"
 TINYOS_REL="${TINYOS_REL#/}"
 TINYOS_REL="${TINYOS_REL%/}"
 ESP_MOUNT="$("$BB" realpath "${ESP_MOUNT%/}")"
-
-# Resolved paths used everywhere else
-# NOTE: keep EFI/ — do NOT strip it.
-export TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
-
-# Create filesystem mountpoints
-"$BB" mkdir -p "$ESP_MOUNT" "$TOOLS_MOUNT"
 
 # -------- sysfs helpers --------
 set_sysfs() { # set_sysfs <abs-or-rel-path-under-/sys> <value>
@@ -223,100 +216,138 @@ apply_sysfs_dir() { # apply_sysfs_dir <dir> ; *.conf "path = value", comments/# 
 # --- Apply initramfs sysfs.d early (before any external mounts) ---
 apply_sysfs_dir "/etc/sysfs.d"
 
-# Resolve a device from a "hint" (LABEL=…, UUID=…, PARTUUID=…, PARTLABEL=…, or /dev/…)
-resolve_hint() { # $1: hint
-  h="$1"
-  case "$h" in
-    LABEL=*|UUID=*|PARTUUID=*|PARTLABEL=*) "$BB" blkid -t "$h" -o device 2>/dev/null | "$BB" head -n1 ;;
-    /dev/*) printf '%s\n' "$h" ;;
-    *)      printf '\n' ;;
-  esac
+# Given blkid output on stdin, filter by the given key (BusyBox-safe, concise)
+# Usage examples:
+#   blkid | filter_hint 'LABEL=HP_TOOLS'
+#   blkid | filter_hint 'LABEL="ESP SYSTEM"'
+#   blkid | filter_hint 'TYPE~/^(vfat|fat|msdos)$/'
+#   blkid | filter_hint '/dev/sda1'
+filter_hint() {
+  "$BB" awk -v hint="$1" -v FS=':' '
+    BEGIN {
+      if (hint ~ /^[/]dev[/][^:]+$/)             { mode="dev"; hval=hint }
+      else if (match(hint, /^([A-Z_]+)([=~].*)$/, kr)) {
+        hkey=kr[1]; raw=kr[2]
+        if      (match(raw, /^~[/](.*)[/]$/, r)) { mode="re";  hval=r[1] }
+        else if (match(raw, /^~(.*)$/, r))       { mode="re";  hval=r[1] }
+        else if (match(raw, /^=["](.*)["]$/, r)) { mode="str"; hval=r[1] }
+        else if (match(raw, /^=(.*)$/, r))       { mode="str"; hval=r[1] }
+      } else exit 2
+    }
+    (mode=="dev" && $1==hval) { print }
+    (mode!="dev" && match($0, FS)) {
+      kvs=substr($0, RSTART+RLENGTH);
+      while (match(kvs, /[[:space:]]+([A-Z_]+)="([^"]*)"/, kv)) {
+        if (kv[1]==hkey && (
+            (mode=="re" && kv[2] ~ hval) || (kv[2]==hval)
+        )) { print; next }
+        kvs=substr(kvs, RSTART+RLENGTH)
+      }
+    }'
 }
+
+# Resolve a device from a "hint" (LABEL=…, UUID=…, TYPE=…, or /dev/…)
+resolve_hint() {
+  "$BB" blkid | filter_hint "$1" | "$BB" awk -v FS=':' 'NR==1{print $1}'
+}
+
 mount_fat_ro() {  # $1:dev $2:mountpoint
   dev="$1"; mnt="$2"
-  "$BB" mount -t vfat -o ro,nodev,nosuid,noexec "$dev" "$mnt" 2>/dev/null ||
-  "$BB" mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null || return 1
+  "$BB" mount -t vfat -o ro,nodev,nosuid,noexec "$dev" "$mnt" 2>/dev/null \
+  || "$BB" mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null || return 1
 }
 
-# ---------- HP_TOOLS (toolbox partition) ----------
-log "discovering HP_TOOLS partition"
-export TOOLS_DEV=""
-# Seed from config or cmdline hint if provided
-if [ -n "${_CMD_TOOLS_HINT:-}" ]; then
-  TOOLS_HINT="$_CMD_TOOLS_HINT"
-fi
-if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
-  TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
-fi
+# ---------- TOOLS (toolbox partition) ----------
+if [ -z "${TOOLS_MOUNT:-} " ]; then
+  log "WARN: TOOLS_MOUNT not set; payload will be unavailable"
+  unset TINYOS_DIR
+else
+  log "discovering TOOLS partition"
+  mkdir -p "$TOOLS_MOUNT" 2>/dev/null || true
+  export TOOLS_DEV=""
+  # Seed from config or cmdline hint if provided
+  if [ -n "${_CMD_TOOLS_HINT:-}" ]; then
+    TOOLS_HINT="$_CMD_TOOLS_HINT"
+  fi
+  if [ -z "${TOOLS_DEV:-}" ] && [ -n "$TOOLS_HINT" ]; then
+    TOOLS_DEV="$(resolve_hint "$TOOLS_HINT" || true)"
+  fi
 
-# Try explicit device first (if given)
-if [ -n "${TOOLS_DEV:-}" ]; then
-  mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
-fi
-
-# Otherwise, prefer a VFAT device whose LABEL is exactly HP_TOOLS (enforced by firmware)
-if [ -z "${TOOLS_DEV:-}" ]; then
-  TOOLS_DEV="$(resolve_hint "LABEL=HP_TOOLS" || true)"
+  # Try explicit device first (if given)
   if [ -n "${TOOLS_DEV:-}" ]; then
     mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
   fi
-fi
 
-# As a final fallback, probe all VFAT devices and match LABEL value
-if [ -z "${TOOLS_DEV:-}" ]; then
-  for d in $("$BB" blkid -t TYPE=vfat -o device 2>/dev/null || true); do
-    lbl="$("$BB" blkid -s LABEL -o value "$d" 2>/dev/null || true)"
-    [ "${lbl:-}" = "HP_TOOLS" ] || continue
-    mount_fat_ro "$d" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; continue; }
-    TOOLS_DEV="$d"; break
-  done
-fi
+  # Otherwise, prefer a VFAT device whose LABEL contains TOOLS
+  if [ -z "${TOOLS_DEV:-}" ]; then
+    TOOLS_DEV="$(resolve_hint 'LABEL~/TOOLS/' || true)"
+    if [ -n "${TOOLS_DEV:-}" ]; then
+      mount_fat_ro "$TOOLS_DEV" "$TOOLS_MOUNT" || { "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true; TOOLS_DEV=""; }
+    fi
+  fi
 
-# Uniform logging regardless of discovery method
-if [ -n "${TOOLS_DEV:-}" ]; then
-  log "HP_TOOLS $TOOLS_DEV mounted on $TOOLS_MOUNT"
-else
-  msg "HP_TOOLS not found (continuing with embedded assets only)"
-fi
+  # Test the discovered device for the existence of the payload
+  if [ -n "${TOOLS_DEV:-}" ]; then
+    export TINYOS_DIR="${TOOLS_MOUNT}/${TINYOS_REL}"
+    if ! [ -d "$TINYOS_DIR" ]; then
+      log "WARN: Payload $TINYOS_DIR not found on $TOOLS_DEV"
+      "$BB" umount "$TOOLS_MOUNT" 2>/dev/null || true
+      unset TINYOS_DIR
+    fi
+  fi
 
-# ---------- ESP (real EFI System Partition) ----------
-log "discovering ESP"
-export ESP_DEV=""
-# Seed from config or cmdline hint if provided
-if [ -n "${_CMD_ESP_HINT}" ]; then
-  ESP_HINT="$_CMD_ESP_HINT"
-fi
-if [ -z "${ESP_DEV:-}" ] && [ -n "$ESP_HINT" ]; then
-  ESP_DEV="$(resolve_hint "$ESP_HINT" || true)"
-fi
-# Never treat HP_TOOLS as ESP
-if [ -n "${TOOLS_DEV:-}" ] && [ -n "${ESP_DEV:-}" ] && [ "$ESP_DEV" = "$TOOLS_DEV" ]; then
-  ESP_DEV=""
-fi
-
-# Try explicit device first (if given)
-if [ -n "${ESP_DEV:-}" ]; then
-  if ! mount_fat_ro "$ESP_DEV" "$ESP_MOUNT" || [ ! -d "$ESP_MOUNT/EFI" ]; then
-    "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
-    ESP_DEV=""
+  # Uniform logging regardless of discovery method
+  if [ -n "${TOOLS_DEV:-}" ]; then
+    log "TOOLS $TOOLS_DEV mounted on $TOOLS_MOUNT"
+  else
+    msg "WARN: TOOLS not found; payload will be unavailable"
+    unset TINYOS_DIR
   fi
 fi
 
-# Otherwise, probe: first VFAT with /EFI, excluding HP_TOOLS
-if [ -z "${ESP_DEV:-}" ]; then
-  for d in $("$BB" blkid -t TYPE=vfat -o device 2>/dev/null || true); do
-    [ -n "${TOOLS_DEV:-}" ] && [ "$d" = "$TOOLS_DEV" ] && continue
-    mount_fat_ro "$d" "$ESP_MOUNT" || continue
-    if [ -d "$ESP_MOUNT/EFI" ]; then ESP_DEV="$d"; break; fi
-    "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
-  done
-fi
-
-# Uniform logging regardless of discovery method
-if [ -n "${ESP_DEV:-}" ]; then
-  log "ESP $ESP_DEV mounted on $ESP_MOUNT"
+# ---------- ESP (real EFI System Partition) ----------
+if [ -z "${ESP_MOUNT:-} " ]; then
+  log "WARN: ESP_MOUNT not set; system ESP will be unavailable"
 else
-  msg "ESP not found (continuing)"
+  log "discovering ESP partition"
+  mkdir -p "$ESP_MOUNT" 2>/dev/null || true
+  export ESP_DEV=""
+  # Seed from config or cmdline hint if provided
+  if [ -n "${_CMD_ESP_HINT}" ]; then
+    ESP_HINT="$_CMD_ESP_HINT"
+  fi
+  if [ -z "${ESP_DEV:-}" ] && [ -n "$ESP_HINT" ]; then
+    ESP_DEV="$(resolve_hint "$ESP_HINT" || true)"
+  fi
+  # Never treat TOOLS as ESP
+  if [ -n "${TOOLS_DEV:-}" ] && [ -n "${ESP_DEV:-}" ] && [ "$ESP_DEV" = "$TOOLS_DEV" ]; then
+    ESP_DEV=""
+  fi
+
+  # Try explicit device first (if given)
+  if [ -n "${ESP_DEV:-}" ]; then
+    if ! mount_fat_ro "$ESP_DEV" "$ESP_MOUNT" || [ ! -d "$ESP_MOUNT/EFI" ]; then
+      "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
+      ESP_DEV=""
+    fi
+  fi
+
+  # Otherwise, probe: first VFAT with /EFI, excluding TOOLS
+  if [ -z "${ESP_DEV:-}" ]; then
+    for d in $("$BB" blkid | filter_hint 'TYPE=vfat' | "$BB" awk -v FS=':' 'NF>1{print $1}'); do
+      [ -n "${TOOLS_DEV:-}" ] && [ "$d" = "$TOOLS_DEV" ] && continue
+      mount_fat_ro "$d" "$ESP_MOUNT" || continue
+      if [ -d "$ESP_MOUNT/EFI" ]; then ESP_DEV="$d"; break; fi
+      "$BB" umount "$ESP_MOUNT" 2>/dev/null || true
+    done
+  fi
+
+  # Uniform logging regardless of discovery method
+  if [ -n "${ESP_DEV:-}" ]; then
+    log "System ESP $ESP_DEV mounted on $ESP_MOUNT"
+  else
+    msg "WARN: System ESP not found"
+  fi
 fi
 
 # Brute-force load all initramfs modules (temporary workaround for console)
