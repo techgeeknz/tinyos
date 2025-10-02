@@ -45,7 +45,8 @@ STAGE_ROOT         := $(ROOT)/staging
 PAYLOAD_DIR        := $(STAGE_ROOT)/payload
 INITRAMFS          := $(STAGE_ROOT)/initramfs.img
 STAGE_META_DIR     := $(STAGE_ROOT)/.meta
-STAGE_STAMP        := $(STAGE_META_DIR)/.assets.stamp
+META_STAMPS        := $(STAGE_META_DIR)/stamps
+STAGE_STAMP        := $(META_STAMPS)/manifest.ready.stamp
 
 # These are internal build paths; do not leak to sub-makes implicitly.
 unexport STAGE_ROOT STAGE_META_DIR PAYLOAD_DIR STAGE_STAMP
@@ -163,8 +164,8 @@ endif
 # ===================== Phony =====================
 .PHONY: all help help-dag \
         linux linux-config linux-headers linux-modules-install \
-        busybox-config busybox bootstrap \
-        staging-prep staging write-tinyos-conf install \
+        busybox-config busybox bootstrap staging-prep staging \
+        write-tinyos-conf install-preflight install \
         linux-pull busybox-pull pull firmware-init firmware-pull \
         list clean mrproper distclean print-%
 
@@ -185,8 +186,10 @@ help:
 	@echo "  staging-prep      - prepare to run staging, but do not actually run it"
 	@echo "  staging           - run rootfs DAG → $(INITRAMFS) and $(EFI_IMAGE); writes/merges tinyos.conf"
 	@echo "  write-tinyos-conf - merge updated boot path into tinyos.conf"
-	@echo "  install           - **read-only**; uses tinyos.conf TOOLS_MOUNT/TINYOS_REL, verifies EFI by content, then rsync"
-	@echo "                      (backs up existing EFI apps; writes $(INSTALL_MANIFEST) of desired contents)"
+	@echo "  install           - install payload to TOOLS_MOUNT/TINYOS_REL (uses stage stamp)"
+	@echo "                      preflight: verify payload vs tinyos-<token>.manifest; then rsync + copy manifest"
+	@echo "                      backs up existing EFI apps under .backup/; requires sudo"
+	@echo "  install-preflight - runs only the non-privileged preflight checks"
 	@echo "  linux-pull        - shallow clone/pull kernel tree (auto-clone if missing)"
 	@echo "  busybox-pull      - shallow clone/pull busybox tree (auto-clone if missing)"
 	@echo "  pull              - update kernel + busybox"
@@ -339,16 +342,39 @@ write-tinyos-conf:
 	mv -f "$(TINYOS_MK).tmp" "$(TINYOS_MK)"
 
 # ===================== Install ======================================
-# Read-only: uses tinyos.conf as source of truth (TOOLS_MOUNT/TINYOS_REL), verifies
-# an actual EFI application exists in payload by content (via file(1) if available),
-# then rsyncs payload into the target directory.
-install:
+# Uses staging artifacts (payload + manifest + stage stamp): verifies payload
+# against tinyos-<token>.manifest unprivileged, then rsyncs into TOOLS_MOUNT/TINYOS_REL.
+# Requires sudo (script enforces EUID==0 post-preflight).
+# NOTE: Do NOT depend on other targets here; we must not run the whole build as root.
+install-preflight:
+	@# Guard: require staging artifacts to exist, but never build them implicitly
+	@if [ ! -e "$(STAGE_STAMP)" ] || [ ! -d "$(PAYLOAD_DIR)" ]; then \
+	  echo "ERROR: staging artifacts missing."; \
+	  echo "Hint: run 'make staging' as your normal user, then 'sudo make install'."; \
+	  echo "Need: $(STAGE_STAMP) and $(PAYLOAD_DIR)/"; \
+	  exit 2; \
+	fi
 	@VERBOSE=$(V) "$(INSTALL_PAYLOAD_SH)" \
 	  --stage-stamp "$(STAGE_STAMP)" \
 	  --payload     "$(PAYLOAD_DIR)" \
 	  --tools-mount "$(TOOLS_MOUNT)" \
 	  --tinyos-rel  "$(TINYOS_REL)" \
-	  --manifest    "$(INSTALL_MANIFEST)" \
+	  --backups     "$(INSTALL_BACKUPS)" \
+	  --preflight
+
+install:
+	@# Guard: require staging artifacts to exist, but never build them implicitly
+	@if [ ! -e "$(STAGE_STAMP)" ] || [ ! -d "$(PAYLOAD_DIR)" ]; then \
+	  echo "ERROR: staging artifacts missing."; \
+	  echo "Hint: run 'make staging' as your normal user, then 'sudo make install'."; \
+	  echo "Need: $(STAGE_STAMP) and $(PAYLOAD_DIR)/"; \
+	  exit 2; \
+	fi
+	@VERBOSE=$(V) "$(INSTALL_PAYLOAD_SH)" \
+	  --stage-stamp "$(STAGE_STAMP)" \
+	  --payload     "$(PAYLOAD_DIR)" \
+	  --tools-mount "$(TOOLS_MOUNT)" \
+	  --tinyos-rel  "$(TINYOS_REL)" \
 	  --backups     "$(INSTALL_BACKUPS)"
 
 # ===================== Git helpers & utilities =====================

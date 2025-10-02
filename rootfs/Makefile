@@ -27,6 +27,7 @@ STAGE_ASSETS_SH   := $(SCRIPTS)/stage-assets.sh
 PACK_INITRAMFS_SH := $(SCRIPTS)/pack-initramfs.sh
 STAGE_EFI_SH      := $(SCRIPTS)/stage-efi.sh
 FW_SPARSE_PULL_SH := $(SCRIPTS)/firmware-sparse-pull.sh
+MANIFEST_SH       := $(SCRIPTS)/manifest.sh
 
 # Normalization helpers (mirror top-level)
 strip_ws = $(strip $(1))
@@ -45,6 +46,9 @@ LISTS_DIR       := $(STAGE_META_DIR)/lists
 GRAPH_DIR       := $(STAGE_META_DIR)/graph
 META_STAMPS     := $(STAGE_META_DIR)/stamps
 $(shell mkdir -p '$(LISTS_DIR)' '$(GRAPH_DIR)' '$(META_STAMPS)' >/dev/null 2>&1 || true)
+
+# Token/conf stamp (authoritative build stamp managed by manifest.sh)
+TOKEN_FILE      := $(META_STAMPS)/token.meta
 
 # Outputs
 INSTALL_NAME    ?= tinyos.efi
@@ -86,9 +90,8 @@ INIT_KVER := $(notdir $(firstword $(wildcard $(INITRAMFS_DIR)/lib/modules/*)))
 PAY_KVER  := $(notdir $(firstword $(wildcard $(PAYLOAD_DIR)/lib/modules/*)))
 
 # Allow the top-level Makefile to choose the “staging complete” marker explicitly.
-# Backward compatible default stays at .assets.stamp under STAGE_ROOT.
-STAGE_STAMP     ?= $(STAGE_ROOT)/.assets.stamp
-ASSETS_STAMP    := $(STAGE_STAMP)
+STAGE_STAMP     ?= $(META_STAMPS)/manifest.ready.stamp
+ASSETS_STAMP    := $(META_STAMPS)/assets.ready.stamp
 
 # Inputs
 INIT            ?= $(CURDIR)/init
@@ -134,7 +137,7 @@ BZIMAGE_STUB    ?= $(ROOT)/linux/arch/x86/boot/bzImage
 .PHONY: help help-dag all clean mrproper \
   prereqs prereqs-busybox prereqs-linux \
   stage-modules stage-firmware stage-assets \
-  initramfs stage-efi staging
+  initramfs stage-efi staging token manifest
 
 help:
 	@echo "Targets (artifact DAG):"
@@ -170,6 +173,7 @@ help-dag:
 	@echo "  STAGE_STAMP     = $(STAGE_STAMP)"
 	@echo "  INITRAMFS_IMG   = $(INITRAMFS_IMG)"
 	@echo "  EFI_OUT         = $(EFI_OUT)"
+	@echo "  TOKEN_FILE      = $(TOKEN_FILE)"
 	@echo "  LISTS_DIR       = $(LISTS_DIR)"
 	@echo "  GRAPH_DIR       = $(GRAPH_DIR)"
 	@echo "  META_STAMPS     = $(META_STAMPS)"
@@ -191,6 +195,11 @@ help-dag:
 # --- Common checks ---
 req-script = @([ -x "$(1)" ] || { echo "ERROR: missing script: $(1)"; exit 1; })
 
+# Guard: abort if token or tinyos.conf changed during the run
+define ensure_stable_token
+	@"$(MANIFEST_SH)" --tinyos-conf "$(TINYOS_CONF)" --verify-stamp "$(TOKEN_FILE)"
+endef
+
 # Preflight prerequisites
 prereqs-busybox:
 	@[ -x "$(BUSYBOX_BIN)" ] || { echo "ERROR: BusyBox not found/executable at $(BUSYBOX_BIN). Build BusyBox first."; exit 1; }
@@ -198,6 +207,16 @@ prereqs-linux:
 	@[ -f "$(BZIMAGE_STUB)" ] || { echo "ERROR: kernel bzImage not found at $(BZIMAGE_STUB). Build Linux first."; exit 1; }
 	@[ -d "$(MODULES_DIR)" ] || { echo "ERROR: MODULES_DIR not found at $(MODULES_DIR). Run modules_install or set MODULES_DIR explicitly."; exit 1; }
 prereqs: prereqs-busybox prereqs-linux
+
+# Token stamp (managed by manifest.sh)
+$(TOKEN_FILE): $(MANIFEST_SH) $(TINYOS_CONF) | $(META_STAMPS)
+	@echo "==> [rootfs] write token/conf stamp → $(TOKEN_FILE)"
+	@VERBOSE=$(V) "$(MANIFEST_SH)" \
+	  --tinyos-conf "$(TINYOS_CONF)" \
+	  --generate-stamp "$@.tmp"
+	@mv -f "$@.tmp" "$@"
+
+token: $(TOKEN_FILE)
 
 # Step 1: Stage modules (writes stamps; also fills $(LISTS_DIR), $(GRAPH_DIR))
 $(MOD_INIT_STAMP) $(MOD_PAY_STAMP): | $(META_STAMPS) $(LISTS_DIR) $(GRAPH_DIR)
@@ -287,8 +306,9 @@ stage-firmware: $(FW_INIT_STAMP) $(FW_PAY_STAMP)
 
 # --- Step 3: assets (init, busybox, config/files) ---
 # Make the assets stamp a real target so other rules can depend on it.
-$(STAGE_STAMP): $(STAGE_ASSETS_SH) prereqs-busybox | $(INITRAMFS_DIR) $(PAYLOAD_DIR) $(META_STAMPS)
+$(ASSETS_STAMP): $(STAGE_ASSETS_SH) prereqs-busybox $(TOKEN_FILE) $(TINYOS_CONF) | $(INITRAMFS_DIR) $(PAYLOAD_DIR) $(META_STAMPS)
 	$(call req-script,$(STAGE_ASSETS_SH))
+	$(call ensure_stable_token)
 	@echo "==> [rootfs] stage assets → $(INITRAMFS_DIR) and $(PAYLOAD_DIR)"
 	@VERBOSE=$(V) "$(STAGE_ASSETS_SH)" \
 	    --stage-root  "$(call strip_ws,$(STAGE_ROOT))" \
@@ -296,21 +316,23 @@ $(STAGE_STAMP): $(STAGE_ASSETS_SH) prereqs-busybox | $(INITRAMFS_DIR) $(PAYLOAD_
 	    --busybox     "$(call strip_ws,$(BUSYBOX_BIN))" \
 	    $(ASSETS_FLAGS) && \
 	mkdir -p "$(dir $(STAGE_STAMP))" && \
-	touch "$(STAGE_STAMP)"
+	touch "$(ASSETS_STAMP)"
 
-stage-assets: $(STAGE_STAMP)
+stage-assets: $(ASSETS_STAMP)
 
 # --- Step 4: initramfs image ---
 initramfs: $(INITRAMFS_IMG)
-$(INITRAMFS_IMG): $(FW_INIT_STAMP) $(STAGE_STAMP) | $(INITRAMFS_DIR)
+$(INITRAMFS_IMG): $(FW_INIT_STAMP) $(ASSETS_STAMP) $(TOKEN_FILE) $(TINYOS_CONF) | $(INITRAMFS_DIR)
 	$(call req-script,$(PACK_INITRAMFS_SH))
+	$(call ensure_stable_token)
 	@echo "==> [rootfs] pack initramfs → $(INITRAMFS_IMG)"
 	@VERBOSE=$(V) "$(PACK_INITRAMFS_SH)" --root "$(call strip_ws,$(INITRAMFS_DIR))" --out "$(call strip_ws,$(INITRAMFS_IMG))"
 
 # --- Step 5: EFI glue (bzImage + initramfs → tinyos.efi flat in payload/) ---
 stage-efi: $(EFI_OUT)
-$(EFI_OUT): $(INITRAMFS_IMG) prereqs-linux | $(PAYLOAD_DIR)
+$(EFI_OUT): $(INITRAMFS_IMG) prereqs-linux $(TOKEN_FILE) $(TINYOS_CONF) | $(PAYLOAD_DIR)
 	$(call req-script,$(STAGE_EFI_SH))
+	$(call ensure_stable_token)
 	@[ -f "$(BZIMAGE_STUB)" ] || { echo "ERROR: missing bzImage EFI stub: $(BZIMAGE_STUB)"; exit 1; }
 	@echo "==> [rootfs] stage EFI payload in $(PAYLOAD_DIR) (→ $(EFI_OUT))"
 	@VERBOSE=$(V) "$(STAGE_EFI_SH)" \
@@ -319,22 +341,41 @@ $(EFI_OUT): $(INITRAMFS_IMG) prereqs-linux | $(PAYLOAD_DIR)
 	    --initramfs    "$(call strip_ws,$(INITRAMFS_IMG))" \
 	    --out-name     "$(call strip_ws,$(INSTALL_NAME))"
 
+# --- Step 6: Generate manifest
+manifest: $(STAGE_STAMP)
+$(STAGE_STAMP): $(EFI_OUT) $(ASSETS_STAMP) $(INITRAMFS_IMG) $(TOKEN_FILE) $(TINYOS_CONF)
+	$(call ensure_stable_token)
+	@VERBOSE=$(V) "$(MANIFEST_SH)" \
+	  --tinyos-conf "$(TINYOS_CONF)" \
+	  --payload "$(PAYLOAD_DIR)" \
+	  --remove-stale \
+	  --generate && \
+	VERBOSE=$(V) "$(MANIFEST_SH)" \
+	  --tinyos-conf "$(TINYOS_CONF)" \
+	  --generate-stamp "$@.tmp" && \
+	mv -f "$@.tmp" "$@"
+
 # Ensure data directories exist when needed (order-only prerequisites)
 $(STAGE_ROOT) $(INITRAMFS_DIR) $(PAYLOAD_DIR) \
 $(META_STAMPS) $(LISTS_DIR) $(GRAPH_DIR):
 	@mkdir -p "$@"
 
 # Aggregate target (full pipeline)
-staging: $(EFI_OUT) $(FW_PAY_STAMP) $(MOD_PAY_STAMP) $(STAGE_STAMP)
+staging: manifest $(EFI_OUT) $(FW_PAY_STAMP) $(MOD_PAY_STAMP) $(STAGE_STAMP)
 	@echo "==> [rootfs] staging DAG complete: $(EFI_OUT)"
 
 all: staging
 
 clean:
 	@echo "==> [rootfs] clean $(STAGE_ROOT)/"
+	@rm -f  "$(STAGE_STAMP)"
+	@rm -rf "$(META_STAMPS)/firmware.*.retry"
 	@rm -rf "$(STAGE_ROOT)"
 	@rm -f  "$(TINYOS_MK)"
-	@rm -f  "$(META_STAMPS)/firmware.*.retry"
+	@VERBOSE=$(V) "$(MANIFEST_SH)" \
+	  --tinyos-conf "$(TINYOS_CONF)" \
+	  --payload "$(PAYLOAD_DIR)" \
+	  --reset
 
 mrproper: clean
 
