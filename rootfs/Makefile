@@ -94,7 +94,7 @@ STAGE_STAMP     ?= $(META_STAMPS)/manifest.ready.stamp
 ASSETS_STAMP    := $(META_STAMPS)/assets.ready.stamp
 
 # Inputs
-INIT            ?= $(CURDIR)/init
+INIT            ?= $(CURDIR)/init.d
 BUSYBOX_BIN     ?= $(ROOT)/busybox/busybox
 README_INITRAMFS?= $(CURDIR)/README.initramfs
 README_PAYLOAD  ?= $(CURDIR)/README.payload
